@@ -63,7 +63,7 @@ void MIPS16 cmd_xmodem(void) {
 
     if(*cmdline == 0 || *cmdline == '\'') {
         // no file name, so this is a transfer to/from program memory
-        if(CurrentLinePtr) error("Invalid in a program");
+        if(CurrentLineOffset) error("Invalid in a program");
         if(Option.DISPLAY_TYPE>=VIRTUAL && WriteBuf)FreeMemorySafe((void **)&WriteBuf);
         if(rcv)ClearProgram(true);                                             // we need all the RAM
         else {
@@ -75,7 +75,7 @@ void MIPS16 cmd_xmodem(void) {
         if(rcv) {
             xmodemReceive(buf, EDIT_BUFFER_SIZE, 0, crunch);
             ClearSavedVars();                                       // clear any saved variables
-            SaveProgramToFlash((unsigned char *)buf, true);
+            SaveProgramToSD((unsigned char *)buf, true);
         } else {
             int nbrlines = 0;
             // we must copy program memory into RAM expanding tokens as we go

@@ -38,6 +38,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "Custom.h"
 #include "Hardware_Includes.h"
 #include "hardware/flash.h"
+#include "ff.h"
 #ifndef PICOMITEWEB
 #include "pico/multicore.h"
 #endif
@@ -74,6 +75,9 @@ const struct s_tokentbl tokentbl[] = {
 static inline CommandToken commandtbl_decode(const unsigned char *p){
     return ((CommandToken)(p[0] & 0x7f)) | ((CommandToken)(p[1] & 0x7f)<<7);
 }
+static inline CommandToken commandtbl_decode_sd(FSIZE_t p){
+    return ((CommandToken)(SDByte(p) & 0x7f)) | ((CommandToken)(SDByte(p+1) & 0x7f)<<7);
+}
 // these are initialised at startup
 int CommandTableSize, TokenTableSize;
 #ifdef rp2350
@@ -105,15 +109,15 @@ unsigned char PromptString[MAXPROMPTLEN];                                    // 
 int ProgramChanged;                                                 // true if the program in memory has been changed and not saved
 struct s_hash g_hashlist[MAXVARS/2]={0};
 int g_hashlistpointer=0;
-unsigned char *LibMemory;                                           //This is where the library is stored. At the last flash slot (4)
-int multi=false;
-unsigned char *ProgMemory;                                                      // program memory, this is where the program is stored
+FSIZE_t LibMemory;                                           //This is where the library is stored. At the last flash slot (4)
+int multi = false;
+FSIZE_t ProgMemory;                                                      // program memory, this is where the program is stored
 int PSize;                                                          // the size of the program stored in ProgMemory[]
 
 int NextData;                                                       // used to track the next item to read in DATA & READ stmts
 unsigned char *NextDataLine;                                                 // used to track the next line to read in DATA & READ stmts
 int g_OptionBase;                                                     // track the state of OPTION BASE
-int  PrepareProgramExt(unsigned char *, int, unsigned char **, int);
+static int  PrepareProgramExt(FSIZe_t, int, unsigned char **, int);
 extern uint32_t core1stack[];;
 
 #if defined(MMFAMILY)
@@ -157,12 +161,13 @@ unsigned char *ep;                                                           // 
 //
 int cmdtoken;                                                       // Token number of the command
 unsigned char *cmdline;                                                      // Command line terminated with a zero unsigned char and trimmed of spaces
-unsigned char *nextstmt;                                                     // Pointer to the next statement to be executed.
-unsigned char *CurrentLinePtr, *SaveCurrentLinePtr;                                               // Pointer to the current line (used in error reporting)
-unsigned char *ContinuePoint;                                                // Where to continue from if using the continue statement
+FSIZE_t nextstmt;                                                     // Pointer to the next statement to be executed.
+FSIZE_t CurrentLineOffset;
+unsigned char *SaveCurrentLineOffset;                                               // Pointer to the current line (used in error reporting)
+FSIZE_t ContinuePoint;                                                // Where to continue from if using the continue statement
 
 extern int TraceOn;
-extern unsigned char *TraceBuff[TRACE_BUFF_SIZE];
+extern FSIZE_t TraceBuff[TRACE_BUFF_SIZE];
 extern int TraceBuffIndex;                                          // used for listing the contents of the trace buffer
 extern long long int CallCFunction(unsigned char *CmdPtr, unsigned char *ArgList, unsigned char *DefP, unsigned char *CallersLinePtr);
 
@@ -252,7 +257,7 @@ int CheckEmpty(char *p){
 // run a program
 // this will continuously execute a program until the end (marked by TWO zero chars)
 // the argument p must point to the first line to be executed
-void MIPS16 __not_in_flash_func(ExecuteProgram)(unsigned char *p) {
+void MIPS16 __not_in_flash_func(ExecuteProgram)(uint8_t* p) {
     int i, SaveLocalIndex = 0;
     jmp_buf SaveErrNext;
     memcpy(SaveErrNext, ErrNext, sizeof(jmp_buf));                  // we call ExecuteProgram() recursively so we need to store/restore old jump buffer between calls
@@ -261,9 +266,11 @@ void MIPS16 __not_in_flash_func(ExecuteProgram)(unsigned char *p) {
     while(1) {
         if(*p == 0) p++;                                            // step over the zero byte marking the beginning of a new element
         if(*p == T_NEWLINE) {
-            CurrentLinePtr = p;                                     // and pointer to the line for error reporting
-            TraceBuff[TraceBuffIndex] = p;                          // used by TRACE LIST
+            CurrentLineOffset = (FSIZE_t)p;                                     // and pointer to the line for error reporting
+            TraceBuff[TraceBuffIndex] = (FSIZE_t)p;                          // used by TRACE LIST
             if(++TraceBuffIndex >= TRACE_BUFF_SIZE) TraceBuffIndex = 0;
+            /// TODO: think about this
+            #if 0
             if(TraceOn && p > ProgMemory && p < ProgMemory + MAX_PROG_SIZE) {
                 inpbuf[0] = '[';
                 IntToStr((char *)inpbuf + 1, CountLines(p), 10);
@@ -271,6 +278,7 @@ void MIPS16 __not_in_flash_func(ExecuteProgram)(unsigned char *p) {
                 MMPrintString((char *)inpbuf);
                 uSec(1000);
             }
+            #endif
             p++;                                                    // and step over the token
         }
         if(*p == T_LINENBR) p += 3;                                 // and step over the number
@@ -281,10 +289,11 @@ void MIPS16 __not_in_flash_func(ExecuteProgram)(unsigned char *p) {
         }
 
         if(*p) {                                                    // if p is pointing to a command
-            if(*p=='\'')nextstmt = cmdline = p + 1;
-            else nextstmt = cmdline = p + sizeof(CommandToken);
+            if(*p=='\'') cmdline = p + 1;
+            else         cmdline = p + sizeof(CommandToken);
+            nextstmt = (FSIZE_t)cmdline;
             skipspace(cmdline);
-            skipelement(nextstmt);
+            while(*(uint8_t*)nextstmt) nextstmt++;
             if(*p && *p != '\'') {                                  // ignore a comment line
                 SaveLocalIndex = g_LocalIndex;                        // save this if we need to cleanup after an error
                 if(setjmp(ErrNext) == 0) {                          // return to the else leg of this if error and OPTION ERROR SKIP/IGNORE is in effect
@@ -297,7 +306,9 @@ void MIPS16 __not_in_flash_func(ExecuteProgram)(unsigned char *p) {
                         else if(!isnamestart(*p)) error("Invalid character: @", (int)(*p));
                         i = FindSubFun(p, false);                   // it could be a defined command
                         if(i >= 0) {                                // >= 0 means it is a user defined command
-                            DefinedSubFun(false, p, i, NULL, NULL, NULL, NULL);
+                            /// TODO:
+                            error("Unsupported command: DefinedSubFun in RAM");
+                          ///  DefinedSubFun(false, p, i, NULL, NULL, NULL, NULL);
                         }
                         else
                             error("Unknown command");
@@ -316,10 +327,82 @@ void MIPS16 __not_in_flash_func(ExecuteProgram)(unsigned char *p) {
                     check_interrupt();                                  // check for an MMBasic interrupt or touch event and handle it
                 }
             }
-            p = nextstmt;
+            p = (uint8_t*)nextstmt;
         }
         if((p[0] == 0 && p[1] == 0) || (p[0] == 0xff && p[1] == 0xff)) break;      // the end of the program is marked by TWO zero chars, empty flash by two 0xff
     }
+    memcpy(ErrNext, SaveErrNext, sizeof(jmp_buf));                  // restore old jump buffer
+}
+void MIPS16 __not_in_flash_func(ExecuteProgramSD)(FSIZE_t fp) {
+    int i, SaveLocalIndex = 0;
+    jmp_buf SaveErrNext;
+    memcpy(SaveErrNext, ErrNext, sizeof(jmp_buf));                  // we call ExecuteProgram() recursively so we need to store/restore old jump buffer between calls
+    open_prog_file();
+    skipspace2(fp);                                                   // just in case, skip any whitespace
+
+    while(1) {
+        if(SDByte(fp) == 0) fp++;                                            // step over the zero byte marking the beginning of a new element
+        if(SDByte(fp) == T_NEWLINE) {
+            CurrentLineOffset = fp;                                     // and pointer to the line for error reporting
+            TraceBuff[TraceBuffIndex] = fp;                          // used by TRACE LIST
+            if(++TraceBuffIndex >= TRACE_BUFF_SIZE) TraceBuffIndex = 0;
+            if(TraceOn && fp > ProgMemory && fp < ProgMemory + MAX_PROG_SIZE) {
+                inpbuf[0] = '[';
+                IntToStr((char *)inpbuf + 1, CountLines(fp), 10);
+                strcat((char *)inpbuf, "]");
+                MMPrintString((char *)inpbuf);
+                uSec(1000);
+            }
+            fp++;                                                    // and step over the token
+        }
+        if(SDByte(fp) == T_LINENBR) fp += 3;                                 // and step over the number
+        skipspace2(fp);                                               // and skip any trailing white space
+        if(SDByte(fp) == T_LABEL) {                                       // got a label
+            fp += SDByte(fp+1) + 2;                                          // skip over the label
+            skipspace2(fp);                                           // and any following spaces
+        }
+
+        if(SDByte(fp)) {                                                    // if p is pointing to a command
+            if(SDByte(fp) == '\'') nextstmt = /* cmdline = */ fp + 1;
+            else nextstmt = /* cmdline = */ fp + sizeof(CommandToken);
+            ///skipspace(cmdline);
+            skipelement2(nextstmt);
+            if(SDByte(fp) && SDByte(fp) != '\'') {                                  // ignore a comment line
+                SaveLocalIndex = g_LocalIndex;                        // save this if we need to cleanup after an error
+                if(setjmp(ErrNext) == 0) {                          // return to the else leg of this if error and OPTION ERROR SKIP/IGNORE is in effect
+                    if(SDByte(fp) >= C_BASETOKEN && SDByte(fp+1) >= C_BASETOKEN){
+                        cmdtoken = commandtbl_decode_sd(fp);
+                        targ = T_CMD;
+                        commandtbl[cmdtoken].fptr(); // execute the command
+                    } else {
+                        if(!isnamestart(SDByte(fp)) && SDByte(fp)=='~') error("Unknown command");
+                        else if(!isnamestart(SDByte(fp))) error("Invalid character: @", (int)(SDByte(fp)));
+                        i = FindSubFunSD(fp, false);                   // it could be a defined command
+                        if(i >= 0) {                                // >= 0 means it is a user defined command
+                            DefinedSubFun(false, fp, i, NULL, NULL, NULL, NULL);
+                        }
+                        else
+                            error("Unknown command");
+                    }
+                } else {
+                    g_LocalIndex = SaveLocalIndex;                    // restore so that we can clean up any memory leaks
+                    ClearTempMemory();
+                }
+                if(OptionErrorSkip > 0) OptionErrorSkip--;        // if OPTION ERROR SKIP decrement the count - we do not error if it is greater than zero
+                if(g_TempMemoryIsChanged) ClearTempMemory();          // at the end of each command we need to clear any temporary string vars
+#ifndef PICOMITEWEB
+                if(core1stack[0]!=0x12345678)error("CPU2 Stack overflow");
+#endif
+                if(!OptionNoCheck){
+                    CheckAbort();
+                    check_interrupt();                                  // check for an MMBasic interrupt or touch event and handle it
+                }
+            }
+            fp = nextstmt;
+        }
+        if((SDByte(fp) == 0 && SDByte(fp+1) == 0) || (SDByte(fp) == 0xff && SDByte(fp+1) == 0xff)) break;      // the end of the program is marked by TWO zero chars, empty flash by two 0xff
+    }
+    close_prog_file();
     memcpy(ErrNext, SaveErrNext, sizeof(jmp_buf));                  // restore old jump buffer
 }
 
@@ -393,7 +476,7 @@ void   MIPS16 PrepareProgram(int ErrAbort) {
 
     for(i = 0; i < MAXSUBFUN && subfun[i] != NULL; i++) {
         for(j = i + 1; j < MAXSUBFUN && subfun[j] != NULL; j++) {
-            CurrentLinePtr = p1 = subfun[i];
+            CurrentLineOffset = p1 = subfun[i];
             p1+=sizeof(CommandToken);
             skipspace(p1);
             p2 = subfun[j];
@@ -419,23 +502,23 @@ void   MIPS16 PrepareProgram(int ErrAbort) {
 
 // This scans one area (main program or the library area) for user defined subroutines and functions.
 // It is only used by PrepareProgram() above.
-int   MIPS16 PrepareProgramExt(unsigned char *p, int i, unsigned char **CFunPtr, int ErrAbort) {
+static int   MIPS16 PrepareProgramExt(FSIZE_t p, int i, unsigned char **CFunPtr, int ErrAbort) {
     unsigned int *cfp;
-    while(*p != 0xff) {
-        p = GetNextCommand(p, &CurrentLinePtr, NULL);
-        if(*p == 0) break;                                          // end of the program or module
+    while(SDByte(p) != 0xff) {
+        p = GetNextCommand(p, &CurrentLineOffset, NULL);
+        if(SDByte(p) == 0) break;                                          // end of the program or module
         CommandToken tkn=commandtbl_decode(p);
         if(tkn == cmdSUB || tkn == cmdFUN /*|| tkn == cmdCFUN*/ || tkn == cmdCSUB) {         // found a SUB, FUN, CFUNCTION or CSUB token
             if(i >= MAXSUBFUN) {
-                FlashWriteInit(PROGRAM_FLASH);
-                flash_range_erase(realflashpointer, MAX_PROG_SIZE);
+                SDWriteInit(PROGRAM_FLASH);
+                SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
                 int j=MAX_PROG_SIZE/4;
-                int *pp=(int *)(flash_progmemory);
+                int *pp=(int *)(lba_progmemory);
                     while(j--)if(*pp++ != 0xFFFFFFFF){
-                        enable_interrupts_pico();
+                        close_prog_file();
                         error("Flash erase problem");
                     }
-                enable_interrupts_pico();
+                close_prog_file();
                 MMPrintString("Error: Too many subroutines and functions - erasing program\r\n");
                 uSec(100000);
                 ClearProgram(true);
@@ -445,20 +528,20 @@ int   MIPS16 PrepareProgramExt(unsigned char *p, int i, unsigned char **CFunPtr,
             }
             subfun[i++] = p++;                                      // save the address and step over the token
             p++; //step past rest of command token
-            skipspace(p);
-            if(!isnamestart(*p)) {
+            skipspace2(p);
+            if(!isnamestart(SDByte(p))) {
                 if(ErrAbort) error("Invalid identifier");
                 i--;
                 continue;
             }
         }
-        while(*p) p++;                                              // look for the zero marking the start of the next element
+        while(SDByte(p)) p++;                                              // look for the zero marking the start of the next element
     }
-    while(*p == 0) p++;                                             // the end of the program can have multiple zeros
+    while(SDByte(p) == 0) p++;                                             // the end of the program can have multiple zeros
     p++;                                                            // step over the terminating 0xff
     *CFunPtr = (unsigned char *)(((unsigned int)p + 0b11) & ~0b11); // CFunction flash (if it exists) starts on the next word address after the program in flash
     if(i < MAXSUBFUN) subfun[i] = NULL;
-    CurrentLinePtr = NULL;
+    CurrentLineOffset = 0;
     // now, step through the CFunction area looking for fonts to add to the font table
     //Bit 7 on the last address byte is used to identify a font.
     cfp = *(unsigned int **)CFunPtr;
@@ -475,7 +558,7 @@ int   MIPS16 PrepareProgramExt(unsigned char *p, int i, unsigned char **CFunPtr,
 // returns with the index of the sub/function in the table or -1 if not found
 // if type = 0 then look for a sub otherwise a function
 #ifdef rp2350
-int __not_in_flash_func(FindSubFun)(unsigned char *p, int type) {
+int FindSubFun(unsigned char *p, int type) {
     unsigned char *s;
     unsigned char name[MAXVARLEN + 1];
     int j, u, namelen;
@@ -508,6 +591,43 @@ int __not_in_flash_func(FindSubFun)(unsigned char *p, int type) {
 			}
 			if(j == 0  && (*(char *)tp == 0 || namelen == MAXVARLEN) && funtbl[hash].index<MAXSUBFUN) {       // found a matching name
 //				MMPrintString("Found : ");MMPrintString((char *)name);MMPrintString(", hash key : ");PInt(hash);PRet();
+					return funtbl[hash].index;
+					break;
+			}
+		}
+		hash++;
+		if(hash==MAXSUBFUN)hash=0;
+	}
+    return -1;
+}
+int FindSubFunSD(FSIZE_t p, int type) {
+    unsigned char *s;
+    unsigned char name[MAXVARLEN + 1];
+    int j, u, namelen;
+    unsigned int hash=FNV_offset_basis;
+	unsigned char *tp, *ip;
+
+// copy the variable name into name
+    s = name; namelen = 0;
+	do {
+        u = mytoupper(SDByte(p));
+		hash ^= u;
+		hash*=FNV_prime;
+		*s++ = u;
+        p++;
+		if(++namelen > MAXVARLEN) error("Variable name too long");
+	} while(isnamechar(SDByte(p)));
+	*s=0;
+	hash %= MAXSUBHASH; //scale 0-512
+	while(funtbl[hash].name[0]!=0){
+		ip=name;
+		tp=(unsigned char *)funtbl[hash].name;
+		if(*ip++ == *tp++) {                 // preliminary quick check
+			j = namelen-1;
+			while(j > 0 && *ip == *tp) {                              // compare each letter
+				j--; ip++; tp++;
+			}
+			if(j == 0  && (*(char *)tp == 0 || namelen == MAXVARLEN) && funtbl[hash].index<MAXSUBFUN) {       // found a matching name
 					return funtbl[hash].index;
 					break;
 			}
@@ -550,7 +670,7 @@ int __not_in_flash_func(FindSubFun)(unsigned char *p, int type) {
 //   fa, i64a, sa and typ are pointers to where the return value is to be stored (used by functions only)
 #if defined(PICOMITEWEB) || defined(PICOMITEVGA)
 #ifdef rp2350
-void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, int index, MMFLOAT *fa, long long int  *i64a, unsigned char **sa, int *typ) {
+void MIPS16 DefinedSubFun(int isfun, FSIZE_t cmd, int index, MMFLOAT *fa, long long int  *i64a, unsigned char **sa, int *typ) {
 #else
 void MIPS16 DefinedSubFun(int isfun, unsigned char *cmd, int index, MMFLOAT *fa, long long int  *i64a, unsigned char **sa, int *typ) {
 #endif
@@ -576,7 +696,7 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
     } *argval;
     int *argVarIndex;
 
-    CallersLinePtr = CurrentLinePtr;
+    CallersLinePtr = CurrentLineOffset;
     SubLinePtr = subfun[index];                                // used for error reporting
     p =  SubLinePtr + sizeof(CommandToken);                    // point to the sub or function definition
     skipspace(p);
@@ -584,7 +704,7 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
    
     // copy the sub/fun name from the definition into temp storage and terminate
     // p is left pointing to the end of the name (ie, start of the argument list in the definition)
-    CurrentLinePtr = SubLinePtr;                               // report errors at the definition
+    CurrentLineOffset = SubLinePtr;                               // report errors at the definition
     tp = fun_name;
     *tp++ = *p++; while(isnamechar(*p)) *tp++ = *p++;
     if(*p == '$' || *p == '%' || *p == '!') {
@@ -598,7 +718,7 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
     if(isfun && *p != '(' /*&& (*SubLinePtr != cmdCFUN)*/) error("Function definition");
 
     // find the end of the caller's identifier, tp is left pointing to the start of the caller's argument list
-    CurrentLinePtr = CallersLinePtr;                                // report errors at the caller
+    CurrentLineOffset = CallersLinePtr;                                // report errors at the caller
     tp = cmd + 1;
     while(isnamechar(*tp)) tp++;
     if(*tp == '$' || *tp == '%' || *tp == '!') {
@@ -608,7 +728,7 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
     if(mytoupper(*(p-1)) != mytoupper(*(tp-1))) error("Inconsistent type suffix");
 
     // if this is a function we check to find if the function's type has been specified with AS <type> and save it
-    CurrentLinePtr = SubLinePtr;                                    // report errors at the definition
+    CurrentLineOffset = SubLinePtr;                                    // report errors at the definition
     FunType = T_NOTYPE;
     if(isfun) {
         ttp = skipvar(ttp, false);                                  // point to after the function name and bracketed arguments
@@ -650,18 +770,18 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
     argbyref=(void *)argv2+MAX_ARG_COUNT * sizeof(unsigned char *);
 
     // now split up the arguments in the caller
-    CurrentLinePtr = CallersLinePtr;                                // report errors at the caller
+    CurrentLineOffset = CallersLinePtr;                                // report errors at the caller
     argc1 = 0;
     if(*tp) makeargs(&tp, MAX_ARG_COUNT, argbuf1, argv1, &argc1, (*tp == '(') ? (unsigned char *)"(," : (unsigned char *)",");
 
     // split up the arguments in the definition
-    CurrentLinePtr = SubLinePtr;                                    // any errors must be at the definition
+    CurrentLineOffset = SubLinePtr;                                    // any errors must be at the definition
     argc2 = 0;
     if(*p) makeargs(&p, MAX_ARG_COUNT, argbuf2, argv2, &argc2, (*p == '(') ? (unsigned char *)"(," : (unsigned char *)",");
 
     // error checking
     if(argc2 && (argc2 & 1) == 0) error("Argument list");
-    CurrentLinePtr = CallersLinePtr;                                // report errors at the caller
+    CurrentLineOffset = CallersLinePtr;                                // report errors at the caller
     if(argc1 > argc2 || (argc1 && (argc1 & 1) == 0)) error("Argument list");
 
     // step through the arguments supplied by the caller and get the value supplied
@@ -727,7 +847,7 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
 
     // now we step through the parameters in the definition of the sub/fun
     // for each one we create the local variable and compare its type to that supplied in the callers list
-    CurrentLinePtr = SubLinePtr;                                    // any errors must be at the definition
+    CurrentLineOffset = SubLinePtr;                                    // any errors must be at the definition
     g_LocalIndex++;
     for(i = 0; i < argc2; i += 2) {                                 // count through the arguments in the definition of the sub/fun
         ArgType = T_NOTYPE;
@@ -752,7 +872,7 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
         tp = findvar(argv2[i], ArgType);                            // declare the local variable
         if(g_vartbl[g_VarIndex].dims[0] > 0) error("Argument list");    // if it is an array it must be an empty array
        
-        CurrentLinePtr = CallersLinePtr;                            // report errors at the caller
+        CurrentLineOffset = CallersLinePtr;                            // report errors at the caller
 
         // if the definition called for an array, special processing and checking will be required
         if(g_vartbl[g_VarIndex].dims[0] == -1) {
@@ -846,7 +966,7 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
     s = cmdline;
 
     ExecuteProgram(p);                                              // execute the function's code
-    CurrentLinePtr = CallersLinePtr;                                // report errors at the caller
+    CurrentLineOffset = CallersLinePtr;                                // report errors at the caller
 
     cmdline = s;                                                    // restore the globals
     cmdtoken = tcmdtoken;
@@ -1593,9 +1713,9 @@ unsigned char MIPS16 __not_in_flash_func(*getvalue)(unsigned char *p, MMFLOAT *f
         i = -1;
         if(*tp == '(') i = FindSubFun(p, 1);                        // if terminated with a bracket it could be a function
         if(i >= 0) {                                                // >= 0 means it is a user defined function
-            unsigned char *SaveCurrentLinePtr = CurrentLinePtr;              // in case the code in DefinedSubFun messes with this
+            unsigned char *SaveCurrentLineOffset = CurrentLineOffset;              // in case the code in DefinedSubFun messes with this
             DefinedSubFun(true, p, i, &f, &i64, &s, &t);
-            CurrentLinePtr = SaveCurrentLinePtr;
+            CurrentLineOffset = SaveCurrentLineOffset;
         } else {
             s = (unsigned char *)findvar(p, V_FIND);                         // if it is a string then the string pointer is automatically set
             t = TypeMask(g_vartbl[g_VarIndex].type);
@@ -1792,7 +1912,7 @@ unsigned char MIPS16 *findline(int nbr, int mustfind) {
     p = ProgMemory;
     next=LibMemory;
     if (Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE){
-       if (CurrentLinePtr >= LibMemory && CurrentLinePtr <= LibMemory + MAX_PROG_SIZE){
+       if (CurrentLineOffset >= LibMemory && CurrentLineOffset <= LibMemory + MAX_PROG_SIZE){
           p=LibMemory;
           next=ProgMemory;
        }
@@ -1969,7 +2089,7 @@ unsigned char MIPS16 *findlabel(unsigned char *labelptr) {
     p = (char *)ProgMemory;
     next=(char *)LibMemory;
     if (Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE){
-       if (CurrentLinePtr >= LibMemory && CurrentLinePtr <= LibMemory + MAX_PROG_SIZE){
+       if (CurrentLineOffset >= LibMemory && CurrentLineOffset <= LibMemory + MAX_PROG_SIZE){
           p=(char *)LibMemory;
           next=(char *)ProgMemory;
        }
@@ -2028,32 +2148,32 @@ int IsValidLine(int nbr) {
 
 // count the number of lines up to and including the line pointed to by the argument
 // used for error reporting in programs that do not use line numbers
-int MIPS16 CountLines(unsigned char *target) {
-    unsigned char *p;
+int MIPS16 CountLines(FSIZE_t target) {
+    FSIZE_t p;
     int cnt;
 
     p = ProgMemory;
-    if(ProgMemory[0]==1 && ProgMemory[1]==39 && ProgMemory[2]==35)cnt=-1;
+    if (SDByte(ProgMemory) == 1 && SDByte(ProgMemory + 1) == 39 && SDByte(ProgMemory + 2) == 35) cnt=-1;
     else cnt = 0;
 
     while(1) {
-        if(*p == 0xff || (p[0] == 0 && p[1] == 0))                   // end of the program
+        if(SDByte(p) == 0xff || (SDByte(p) == 0 && SDByte(p+1) == 0))                   // end of the program
             return cnt;
 
-        if(*p == T_NEWLINE) {
+        if(SDByte(p) == T_NEWLINE) {
             p++;                                                 // and step over the line number
             cnt++;
             if(p >= target) return cnt;
             continue;
         }
 
-        if(*p == T_LINENBR) {
+        if(SDByte(p) == T_LINENBR) {
             p += 3;                                                 // and step over the line number
             continue;
         }
 
-        if(*p == T_LABEL) {
-            p += p[0] + 2;                                          // still looking! skip over the label
+        if(SDByte(p) == T_LABEL) {
+            p += SDByte(p) + 2;                                          // still looking! skip over the label
             continue;
         }
 
@@ -2820,7 +2940,7 @@ void MIPS16 error(char *msg, ...) {
             DisplayBuf=(unsigned char *)FRAMEBUFFER;
         #else
             restorepanel();            
-        #endif       // we now have CurrentLinePtr pointing to the start of the line
+        #endif       // we now have CurrentLineOffset pointing to the start of the line
         SetFont(PromptFont);
         gui_fcolour = PromptFC;
         gui_bcolour = PromptBC;
@@ -2847,18 +2967,17 @@ void MIPS16 error(char *msg, ...) {
     }
     if(MMCharPos > 1) MMPrintString("\r\n");
     int line_num = -2;
-    if(CurrentLinePtr) {
+    if(CurrentLineOffset) {
         tp = p = (char *)ProgMemory;
-        if (Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && CurrentLinePtr < LibMemory+MAX_PROG_SIZE)
+        if (Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && CurrentLineOffset < LibMemory+MAX_PROG_SIZE)
            tp = p = (char *)LibMemory;
-        //if(*CurrentLinePtr != T_NEWLINE && CurrentLinePtr < ProgMemory + MAX_PROG_SIZE) {
-        if(*CurrentLinePtr != T_NEWLINE && ((CurrentLinePtr < ProgMemory + MAX_PROG_SIZE) || (Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && CurrentLinePtr < LibMemory+MAX_PROG_SIZE))) {    
-            // normally CurrentLinePtr points to a T_NEWLINE token but in this case it does not
-            // so we have to search for the start of the line and set CurrentLinePtr to that
+        if(*CurrentLineOffset != T_NEWLINE && ((CurrentLineOffset < ProgMemory + MAX_PROG_SIZE) || (Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && CurrentLineOffset < LibMemory+MAX_PROG_SIZE))) {    
+            // normally CurrentLineOffset points to a T_NEWLINE token but in this case it does not
+            // so we have to search for the start of the line and set CurrentLineOffset to that
           while(*p != 0xff) {
               while(*p) p++;                                        // look for the zero marking the start of an element
-              if(p >= (char *)CurrentLinePtr || p[1] == 0) {                // the previous line was the one that we wanted
-                  CurrentLinePtr = (unsigned char *)tp;
+              if(p >= (char *)CurrentLineOffset || p[1] == 0) {                // the previous line was the one that we wanted
+                  CurrentLineOffset = (unsigned char *)tp;
                   break;
                 }
               if(p[1] == T_NEWLINE) {
@@ -2870,14 +2989,14 @@ void MIPS16 error(char *msg, ...) {
             }
         }
 
-       // we now have CurrentLinePtr pointing to the start of the line
-//        dump(CurrentLinePtr, 80);
-        llist(tknbuf, CurrentLinePtr);
+       // we now have CurrentLineOffset pointing to the start of the line
+//        dump(CurrentLineOffset, 80);
+        llist(tknbuf, CurrentLineOffset);
         p = (char *) tknbuf;
         skipspace(p);
-        if(CurrentLinePtr >= ProgMemory && CurrentLinePtr < ProgMemory + MAX_PROG_SIZE){
-            line_num = CountLines(CurrentLinePtr);
-            StartEditPoint = CurrentLinePtr;
+        if(CurrentLineOffset >= ProgMemory && CurrentLineOffset < ProgMemory + MAX_PROG_SIZE){
+            line_num = CountLines(CurrentLineOffset);
+            StartEditPoint = CurrentLineOffset;
             StartEditChar = 0;
         } else {
             line_num = -1;
@@ -3260,7 +3379,7 @@ void MIPS16 ClearRuntime(bool all) {
     restorepointer = 0;
     g_flag=0;
     g_varcnt = 0;
-    CurrentLinePtr = ContinuePoint = NULL;
+    CurrentLineOffset = ContinuePoint = NULL;
     for(i = 0;  i < MAXSUBFUN; i++)  subfun[i] = NULL;
 #ifdef GUICONTROLS
     for(i = 1; i < Option.MaxCtrls; i++) {

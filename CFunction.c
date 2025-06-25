@@ -78,7 +78,7 @@ long long int MIPS16 CallCFunction(unsigned char *CmdPtr, unsigned char *ArgList
     }
 
     // we have found the CFunction or CSub and the types on its command line
-    CurrentLinePtr = CallersLinePtr;                                // report errors at the caller
+    CurrentLineOffset = CallersLinePtr;                                // report errors at the caller
     if(*ArgList != ')') {
         getargs(&ArgList, 19, (unsigned char *)",");                                 // expand the command line of the caller
         for(i = 0; i < argc; i += 2) {

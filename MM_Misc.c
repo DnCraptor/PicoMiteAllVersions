@@ -113,7 +113,7 @@ uint8_t *buff320=NULL;
     void setwifi(unsigned char *tp){
         getargs(&tp,11,(unsigned char *)",");
         if(!(argc==3 || argc==5 || argc==11))error("Syntax");
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
         char *ssid=GetTempMemory(STRINGSIZE);
         char *password=GetTempMemory(STRINGSIZE);
         char *hostname=GetTempMemory(STRINGSIZE);
@@ -186,7 +186,7 @@ void VGArecovery(int pin){
     }
 #endif
 #endif
-extern const uint8_t *flash_target_contents;
+extern const uint8_t *lba_target_contents;
 int TickPeriod[NBRSETTICKS]={0};
 volatile int TickTimer[NBRSETTICKS]={0};
 unsigned char *TickInt[NBRSETTICKS]={NULL};
@@ -1458,8 +1458,13 @@ void MIPS16 cmd_library(void) {
         unsigned short rem, tkn;
         int i, j, k, InCFun, InQuote, CmdExpected;
         unsigned int CFunDefAddr[100], *CFunHexAddr[100] ;
-        if(CurrentLinePtr) error("Invalid in a program");
-        if(*ProgMemory != 0x01) return;
+        if(CurrentLineOffset) error("Invalid in a program");
+        open_prog_file();
+        if (SDByte(ProgMemory) != 0x01) {
+            close_prog_file();
+            return; // no program to run
+        }
+        close_prog_file();
         checkend(p);
         ClearRuntime(true);
         TempPtr = m = MemBuff = GetTempMemory(EDIT_BUFFER_SIZE);
@@ -1468,7 +1473,7 @@ void MIPS16 cmd_library(void) {
         InQuote = InCFun = j = 0;
         CmdExpected = true;
        if(Option.LIBRARY_FLASH_SIZE != MAX_PROG_SIZE){
-           uint32_t *c = (uint32_t *)(flash_progmemory - MAX_PROG_SIZE);
+           uint32_t *c = (uint32_t *)(lba_progmemory - MAX_PROG_SIZE);
            if (*c != 0xFFFFFFFF)
             error("Flash Slot % already in use",MAXFLASHSLOTS);
         ;
@@ -1489,7 +1494,7 @@ void MIPS16 cmd_library(void) {
             if(p[0] == 0 && p[1] == 0) break;                       // end of the program
             if(*p == T_NEWLINE) {
                 TempPtr = m;
-                CurrentLinePtr = p;
+                CurrentLineOffset = p;
                 *m++ = *p++;
                 CmdExpected = true;                                 // if true we can expect a command next (possibly a CFunction, etc)
                 if(*p == 0) {                                       // if this is an empty line we can skip it
@@ -1639,21 +1644,21 @@ void MIPS16 cmd_library(void) {
   //******************************************************************************
         //now write the library from ram to the library flash area
         // initialise for writing to the flash
-        FlashWriteInit(LIBRARY_FLASH);
-        flash_range_erase(realflashpointer, MAX_PROG_SIZE);
+        SDWriteInit(LIBRARY_FLASH);
+        SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
         i=MAX_PROG_SIZE/4;
        
-        int *ppp=(int *)(flash_progmemory - MAX_PROG_SIZE);
+        int *ppp=(int *)(lba_progmemory - MAX_PROG_SIZE);
         while(i--)if(*ppp++ != 0xFFFFFFFF){
-            enable_interrupts_pico();
+            close_prog_file();
             error("Flash erase problem");
         }
    
         i=0;
         for(k = 0; k < m - MemBuff; k++){        // write to the flash byte by byte
-           FlashWriteByte(MemBuff[k]);
+           SDWriteByte(MemBuff[k]);
         }
-        FlashWriteClose();
+        SDWriteClose();
         Option.LIBRARY_FLASH_SIZE = MAX_PROG_SIZE;
         SaveOptions();
 
@@ -1669,7 +1674,7 @@ void MIPS16 cmd_library(void) {
         //Now call the new command that will clear the current program memory then
         //write the library code at Option.ProgFlashSize by copying it from the windbond
         //and return to the command prompt.
-        cmdline = (unsigned char *)""; CurrentLinePtr = NULL;    // keep the NEW command happy
+        cmdline = (unsigned char *)""; CurrentLineOffset = NULL;    // keep the NEW command happy
         cmd_new();                              //  delete the program,add the library code and return to the command prompt
     }
      /********************************************************************************************************************
@@ -1677,25 +1682,25 @@ void MIPS16 cmd_library(void) {
 
      if(checkstring(cmdline, (unsigned char *)"DELETE")) {
         int i;
-        if(CurrentLinePtr) error("Invalid in a program");
+        if(CurrentLineOffset) error("Invalid in a program");
         if(Option.LIBRARY_FLASH_SIZE != MAX_PROG_SIZE) return;
         
-        FlashWriteInit(LIBRARY_FLASH);
-        flash_range_erase(realflashpointer, MAX_PROG_SIZE);
+        SDWriteInit(LIBRARY_FLASH);
+        SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
         i=MAX_PROG_SIZE/4;
        
-        int *ppp=(int *)(flash_progmemory - MAX_PROG_SIZE);
+        int *ppp=(int *)(lba_progmemory - MAX_PROG_SIZE);
         while(i--)if(*ppp++ != 0xFFFFFFFF){
-            enable_interrupts_pico();
+            close_prog_file();
             error("Flash erase problem");
         }
-        enable_interrupts_pico();
+        close_prog_file();
 
         Option.LIBRARY_FLASH_SIZE= 0;
         SaveOptions();
         return;
         // Clear Program Memory and also the Library at the end.
-//        cmdline = ""; CurrentLinePtr = NULL;    // keep the NEW command happy
+//        cmdline = ""; CurrentLineOffset = NULL;    // keep the NEW command happy
 //        cmd_new();                              //  delete any program,and the library code and return to the command prompt
         
      }
@@ -1704,13 +1709,13 @@ void MIPS16 cmd_library(void) {
       ******* LIBRARY LIST **********************************************************************************************/
 
      if(checkstring(cmdline, (unsigned char *)"LIST ALL")) {
-        if(CurrentLinePtr) error("Invalid in a program");
+        if(CurrentLineOffset) error("Invalid in a program");
         if(Option.LIBRARY_FLASH_SIZE != MAX_PROG_SIZE) return;
         ListProgram(ProgMemory - Option.LIBRARY_FLASH_SIZE, true);
         return;
      }
      if(checkstring(cmdline, (unsigned char *)"LIST")) {
-        if(CurrentLinePtr) error("Invalid in a program");
+        if(CurrentLineOffset) error("Invalid in a program");
         if(Option.LIBRARY_FLASH_SIZE != MAX_PROG_SIZE) return;
         ListProgram(ProgMemory - Option.LIBRARY_FLASH_SIZE, false);
         return;
@@ -1718,7 +1723,7 @@ void MIPS16 cmd_library(void) {
      if((tp=checkstring(cmdline, (unsigned char *)"DISK SAVE"))) {
         getargs(&tp,1,(unsigned char *)",");
         if(!(argc==1))error("Syntax");
-        if(CurrentLinePtr) error("Invalid in a program");
+        if(CurrentLineOffset) error("Invalid in a program");
         int fnbr = FindFreeFileNbr();
         if (!InitSDCard())  return;
         if(Option.LIBRARY_FLASH_SIZE != MAX_PROG_SIZE) error("No library to store");
@@ -1763,7 +1768,7 @@ void MIPS16 cmd_library(void) {
         int fsize;
         getargs(&tp,1,(unsigned char *)",");
         if(!(argc==1))error("Syntax");
-        if(CurrentLinePtr) error("Invalid in a program");
+        if(CurrentLineOffset) error("Invalid in a program");
         int fnbr = FindFreeFileNbr();
         if (!InitSDCard())  return;
         char *pp = (char *)getFstring(argv[0]);
@@ -1773,18 +1778,18 @@ void MIPS16 cmd_library(void) {
 		if(filesource[fnbr]!=FLASHFILE)  fsize = f_size(FileTable[fnbr].fptr);
 		else fsize = lfs_file_size(&lfs,FileTable[fnbr].lfsptr);
         if(fsize>MAX_PROG_SIZE)error("File size % should be % or less",fsize,MAX_PROG_SIZE);
-        FlashWriteInit(LIBRARY_FLASH);
-        flash_range_erase(realflashpointer, MAX_PROG_SIZE);
+        SDWriteInit(LIBRARY_FLASH);
+        SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
         int i=MAX_PROG_SIZE/4;
-        int *ppp=(int *)(flash_progmemory - MAX_PROG_SIZE);
+        int *ppp=(int *)(lba_progmemory - MAX_PROG_SIZE);
         while(i--)if(*ppp++ != 0xFFFFFFFF){
-            enable_interrupts_pico();
+            close_prog_file();
             error("Flash erase problem");
         }
         for(int k = 0; k < fsize; k++){        // write to the flash byte by byte
-           FlashWriteByte(FileGetChar(fnbr));
+           SDWriteByte(FileGetChar(fnbr));
         }
-        FlashWriteClose();
+        SDWriteClose();
         Option.LIBRARY_FLASH_SIZE = MAX_PROG_SIZE;
         SaveOptions();
         FileClose(fnbr);
@@ -3171,7 +3176,7 @@ void MIPS16 cmd_option(void) {
     tp = checkstring(cmdline, (unsigned char *)"HDMI PINS");
     if(tp) {
         getargs(&tp,7,(unsigned char *)",");
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
         if(argc!=7)error("Syntax");
         uint8_t clock=getint(argv[0],0,7);
         uint8_t d0=getint(argv[2],0,7);
@@ -3200,7 +3205,7 @@ void MIPS16 cmd_option(void) {
         int pin1;
         unsigned char code;
         getargs(&tp,1,(unsigned char *)",");
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
         if(!(code=codecheck(argv[0])))argv[0]+=2;
         pin1 = getinteger(argv[0]);
         if(!code)pin1=codemap(pin1);
@@ -3231,7 +3236,7 @@ void MIPS16 cmd_option(void) {
         int pin1,pin2;
         unsigned char code;
 		getargs(&tp,3,(unsigned char *)",");
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
         if(Option.KEYBOARD_CLOCK)error("Keyboard must be disabled to change pins");
         if(argc!=3)error("Syntax");
         if(!(code=codecheck(argv[0])))argv[0]+=2;
@@ -3253,7 +3258,7 @@ void MIPS16 cmd_option(void) {
 	}
     tp = checkstring(cmdline, (unsigned char *)"MOUSE");
 	if(tp) {
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
         if(checkstring(tp,(unsigned char *)"DISABLE")){
             Option.MOUSE_CLOCK=0;
             Option.MOUSE_DATA=0;
@@ -3285,7 +3290,7 @@ void MIPS16 cmd_option(void) {
 #endif
     tp = checkstring(cmdline, (unsigned char *)"KEYBOARD");
 	if(tp) {
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
 #ifndef USBKEYBOARD
 		if(checkstring(tp, (unsigned char *)"DISABLE")){
 			Option.KeyboardConfig = NO_KEYBOARD;
@@ -3355,7 +3360,7 @@ void MIPS16 cmd_option(void) {
 
     tp = checkstring(cmdline, (unsigned char *)"BAUDRATE");
     if(tp) {
-        if(CurrentLinePtr) error("Invalid in a program");
+        if(CurrentLineOffset) error("Invalid in a program");
         int i;
         i = getint(tp,Option.CPU_Speed*1000/16/65535,921600);	
         if(i < 100) error("Number out of bounds");
@@ -3368,7 +3373,7 @@ void MIPS16 cmd_option(void) {
 
     tp = checkstring(cmdline, (unsigned char *)"SERIAL CONSOLE");
     if(tp) {
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
 //        unsigned char *p=NULL;
         if(checkstring(tp, (unsigned char *)"DISABLE")) {
             Option.SerialTX=0;
@@ -3549,7 +3554,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     }
     tp = checkstring(cmdline, (unsigned char *)"LCDPANEL NOCONSOLE");
     if(tp){
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
         Option.Height = SCREENHEIGHT; Option.Width = SCREENWIDTH;
         Option.DISPLAY_CONSOLE = 0;
         Option.DefaultFC = WHITE;
@@ -3566,7 +3571,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     }
     tp = checkstring(cmdline, (unsigned char *)"LCDPANEL CONSOLE");
     if(tp) {
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
         Option.NoScroll = 0;
         if(!(Option.DISPLAY_TYPE==ST7789B || Option.DISPLAY_TYPE==ILI9488 || Option.DISPLAY_TYPE == ST7796SP  || Option.DISPLAY_TYPE == ST7796S || Option.DISPLAY_TYPE == ILI9488P || Option.DISPLAY_TYPE==ILI9341 || Option.DISPLAY_TYPE>=VGADISPLAY))Option.NoScroll=1;
         if(!(Option.DISPLAY_ORIENTATION == DISPLAY_LANDSCAPE) && Option.DISPLAY_TYPE==SSDTYPE) error("Landscape only");
@@ -3637,7 +3642,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
         }
 #endif
         Option.DISPLAY_CONSOLE = true; 
-        if(!CurrentLinePtr) {
+        if(!CurrentLineOffset) {
             ResetDisplay();
             //Only setterminal if console is bigger than 80*24
             if  (Option.Width > SCREENWIDTH || Option.Height > SCREENHEIGHT){ 
@@ -3671,7 +3676,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     tp = checkstring(cmdline, (unsigned char *)"TCP SERVER PORT");
     if(tp) {
         getargs(&tp,3,(unsigned char *)",");
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
         Option.TCP_PORT=getint(argv[0],0,65535);
         Option.ServerResponceTime=5000;
         if(argc==3)Option.ServerResponceTime=getint(argv[2],1000,20000);
@@ -3683,7 +3688,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     tp = checkstring(cmdline, (unsigned char *)"UDP SERVER PORT");
     if(tp) {
         getargs(&tp,3,(unsigned char *)",");
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
         Option.UDP_PORT=getint(argv[0],0,65535);
         Option.UDPServerResponceTime=5000;
         if(argc==3)Option.UDPServerResponceTime=getint(argv[2],1000,20000);
@@ -3694,7 +3699,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     }
     tp = checkstring(cmdline, (unsigned char *)"TELNET CONSOLE");
     if(tp) {
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
         if(checkstring(tp, (unsigned char *)"OFF"))Option.Telnet=0;
         else if(checkstring(tp, (unsigned char *)"ON"))Option.Telnet=1;
         else if(checkstring(tp, (unsigned char *)"ONLY")) Option.Telnet=-1;
@@ -3706,7 +3711,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     }
     tp = checkstring(cmdline, (unsigned char *)"TFTP");
     if(tp) {
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
         if(checkstring(tp, (unsigned char *)"OFF"))Option.disabletftp=1;
         else if(checkstring(tp, (unsigned char *)"ON"))Option.disabletftp=0;
         else if(checkstring(tp, (unsigned char *)"ENABLE"))Option.disabletftp=0;
@@ -3724,7 +3729,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     tp = checkstring(cmdline, (unsigned char *)"RESOLUTION");
     if(tp) {
         getargs(&tp,3,(unsigned char *)",");
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
         if((checkstring(argv[0], (unsigned char *)"640")) || (checkstring(argv[0], (unsigned char *)"640x480"))){
             if(argc==3){
 #ifdef HDMI
@@ -3784,7 +3789,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     if(tp) {
         int pin1,testpin;
         getargs(&tp,1,(unsigned char *)",");
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
         char code;
         if(!(code=codecheck(argv[0])))argv[0]+=2;
         pin1 = getinteger(argv[0]);
@@ -3872,7 +3877,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     tp = checkstring(cmdline, (unsigned char *)"CPUSPEED");
     if(tp) {
         uint32_t speed=0;    
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
         speed=getint(tp,MIN_CPU,MAX_CPU);
         uint vco, postdiv1, postdiv2;
         if (!check_sys_clock_khz(speed, &vco, &postdiv1, &postdiv2))error("Invalid clock speed");
@@ -3897,7 +3902,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     tp = checkstring(cmdline, (unsigned char *)"LCDPANEL");
     if(tp) {
         if(checkstring(tp, (unsigned char *)"DISABLE")) {
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
             Option.LCD_CD = Option.LCD_CS = Option.LCD_Reset = Option.DISPLAY_TYPE = Option.SSD_DATA= HRes = VRes = 0;
             Option.SSD_DC = Option.SSD_WR = Option.SSD_RD=SSD1963data=0;
     		Option.TOUCH_XZERO = Option.TOUCH_YZERO = 0;                    // record the touch feature as not calibrated
@@ -3914,10 +3919,10 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
             ReadBuffer = (void (*)(int , int , int , int , unsigned char * ))DisplayNotSet;
 			Option.DISPLAY_CONSOLE = false;
 		} else {
-            if(Option.DISPLAY_TYPE && !CurrentLinePtr) error("Display already configured");
+            if(Option.DISPLAY_TYPE && !CurrentLineOffset) error("Display already configured");
             ConfigDisplayUser(tp);
             if(Option.DISPLAY_TYPE)return;
-    	    if(CurrentLinePtr) error("Invalid in a program");
+    	    if(CurrentLineOffset) error("Invalid in a program");
             if(!Option.DISPLAY_TYPE)ConfigDisplaySPI(tp);
             if(!Option.DISPLAY_TYPE)ConfigDisplayVirtual(tp);
             if(!Option.DISPLAY_TYPE)ConfigDisplaySSD(tp);
@@ -3930,7 +3935,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     }
     tp = checkstring(cmdline, (unsigned char *)"TOUCH");
     if(tp) {
-      if(CurrentLinePtr) error("Invalid in a program");
+      if(CurrentLineOffset) error("Invalid in a program");
       if(checkstring(tp, (unsigned char *)"DISABLE")) {
             if(Option.CombinedCS)error("Touch CS in use for SDcard");
             Option.TOUCH_Click = Option.TOUCH_CS = Option.TOUCH_IRQ = false;
@@ -3962,7 +3967,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     tp = checkstring(cmdline,(unsigned char *)"GUI CONTROLS");
     if(tp) {
         getargs(&tp, 1, (unsigned char *)",");
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
         Option.MaxCtrls=getint(argv[0],0,MAXCONTROLS-1);
         if(Option.MaxCtrls)Option.MaxCtrls++;
         SaveOptions();
@@ -4050,7 +4055,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     if(tp) {
         unsigned char *p=NULL;
         int i, size=0;
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
         if((p=checkstring(tp, (unsigned char *)"ENABLE"))){
             if(!Option.modbuff)       { 
                 getargs(&p,1,(unsigned char *)",");
@@ -4106,7 +4111,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     if(tp) {
         int pin1,pin2, slice;
         unsigned char *p;
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
         if(checkstring(tp, (unsigned char *)"DISABLE")){
             disable_audio();
             SaveOptions();
@@ -4301,7 +4306,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     if(tp) {
         int pin1,pin2,channel=-1;
         if(checkstring(tp, (unsigned char *)"DISABLE")){
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
  #ifdef PICOMITEVGA
         if(Option.RTC_Clock || Option.RTC_Data)error("In use");
 #else
@@ -4314,7 +4319,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
             return;                                // this will restart the processor ? only works when not in debug
         }
     	getargs(&tp,5,(unsigned char *)",");
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
          if(argc<3)error("Syntax");
         if(Option.SYSTEM_I2C_SCL)error("I2C already configured");
         unsigned char code;
@@ -4403,7 +4408,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     if(tp) {
         int pin1,pin2,pin3;
         if(checkstring(tp, (unsigned char *)"DISABLE")){
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
          if((Option.SD_CS && Option.SD_CLK_PIN==0) || Option.TOUCH_CS || Option.LCD_CS || Option.CombinedCS)error("In use");
             disable_systemspi();
             SaveOptions();
@@ -4412,7 +4417,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
             return;                                // this will restart the processor ? only works when not in debug
         }
     	getargs(&tp,5,(unsigned char *)",");
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
          if(argc!=5)error("Syntax");
         if(Option.SYSTEM_CLK)error("SYSTEM SPI already configured");
         unsigned char code;
@@ -4448,7 +4453,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     #if 0
 	tp = checkstring(cmdline, (unsigned char *)"SDCARD");
     int pin1, pin2, pin3, pin4;
-    if(CurrentLinePtr) error("Invalid in a program");
+    if(CurrentLineOffset) error("Invalid in a program");
     if(tp) {
         if(checkstring(tp, (unsigned char *)"DISABLE")){
             FatFSFileSystem=0;
@@ -4534,7 +4539,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
     if(tp){
         getargs(&tp,1,(unsigned char *)",");
         if(!(argc==1))error("Syntax");
-        if(CurrentLinePtr) error("Invalid in a program");
+        if(CurrentLineOffset) error("Invalid in a program");
         int fnbr = FindFreeFileNbr();
         if (!InitSDCard())  return;
         char *pp = (char *)getFstring(argv[0]);
@@ -4552,7 +4557,7 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
 	tp = checkstring(cmdline, (unsigned char *)"DISK LOAD");
     if(tp){
         getargs(&tp,1,(unsigned char *)",");
-    	if(CurrentLinePtr) error("Invalid in a program");
+    	if(CurrentLineOffset) error("Invalid in a program");
         if(!(argc==1))error("Syntax");
         int fnbr = FindFreeFileNbr();
         int fsize;
@@ -4571,25 +4576,25 @@ tp = checkstring(cmdline, (unsigned char *)"HEARTBEAT");
         Option.Magic=MagicKey; //This isn't ideal but it improves the chances of a older config working in a new build
         FileClose(fnbr);
         uSec(100000);
-        disable_interrupts_pico();
-        flash_range_erase(FLASH_TARGET_OFFSET, FLASH_ERASE_SIZE);
-        enable_interrupts_pico();
+        open_prog_file();
+        SDEraseBlock(0, FLASH_ERASE_SIZE);
+        close_prog_file();
         uSec(10000);
-        disable_interrupts_pico();
-        flash_range_program(FLASH_TARGET_OFFSET, (const uint8_t *)&Option, 768);
-        enable_interrupts_pico();
+        open_prog_file();
+        SDWriteProg(0, (const uint8_t *)&Option, 768);
+        close_prog_file();
         _excep_code = RESET_COMMAND;
         SoftReset();
     }
 	tp = checkstring(cmdline, (unsigned char *)"RESET");
     if(tp) {
-   	    if(CurrentLinePtr) error("Invalid in a program");
+   	    if(CurrentLineOffset) error("Invalid in a program");
         if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE) {
-          uint32_t j = FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE + ((MAXFLASHSLOTS - 1) * MAX_PROG_SIZE);
+          uint32_t j = (MAXFLASHSLOTS - 1) * MAX_PROG_SIZE;
           uSec(250000);
-          disable_interrupts_pico();
-          flash_range_erase(j, MAX_PROG_SIZE);
-          enable_interrupts_pico();
+          open_prog_file();
+          SDEraseBlock(j, MAX_PROG_SIZE);
+          close_prog_file();
         }
         configure(tp);
         return;
@@ -4863,7 +4868,7 @@ void MIPS16 fun_info(void){
             targ=T_INT;
             return;
         } else if((tp=checkstring(ep, (unsigned char *)"FLASH ADDRESS"))){
-            iret=(int64_t)(unsigned int)(flash_target_contents + (getint(tp,1,MAXFLASHSLOTS) - 1) * MAX_PROG_SIZE);
+            iret=(int64_t)(unsigned int)(lba_target_contents + (getint(tp,1,MAXFLASHSLOTS) - 1) * MAX_PROG_SIZE);
             targ=T_INT;
             return;
         } else if((tp=checkstring(ep, (unsigned char *)"FILESIZE"))){
@@ -5000,12 +5005,12 @@ void MIPS16 fun_info(void){
     }
 #endif
     else if (checkstring(ep, (unsigned char *)"LINE")) {
-        if (!CurrentLinePtr) {
+        if (!CurrentLineOffset) {
             strcpy((char *)sret, "UNKNOWN");
-        } else if (CurrentLinePtr >= ProgMemory + MAX_PROG_SIZE) {
+        } else if (CurrentLineOffset >= ProgMemory + MAX_PROG_SIZE) {
             strcpy((char *)sret, "LIBRARY");
         } else {
-            sprintf((char *)sret, "%d", CountLines(CurrentLinePtr));
+            sprintf((char *)sret, "%d", CountLines(CurrentLineOffset));
         }
         CtoM(sret);
         targ=T_STR;
@@ -5120,9 +5125,9 @@ void MIPS16 fun_info(void){
 		} else if(checkstring(tp, (unsigned char *)"FLASH SIZE")){
             uint8_t txbuf[4] = {0x9f};
             uint8_t rxbuf[4] = {0};
-            disable_interrupts_pico();
+            open_prog_file();
             flash_do_cmd(txbuf, rxbuf, 4);
-            enable_interrupts_pico();
+            close_prog_file();
             iret= 1 << rxbuf[3];
 			targ=T_INT;
 			return;
@@ -6093,7 +6098,7 @@ GotAnInterrupt:
         rti[0] = (cmdIRET & 0x7f ) + C_BASETOKEN;
         rti[1] = (cmdIRET >> 7) + C_BASETOKEN; //tokens can be 14-bit
         if(gosubindex >= MAXGOSUB) error("Too many SUBs for interrupt");
-        errorstack[gosubindex] = CurrentLinePtr;
+        errorstack[gosubindex] = CurrentLineOffset;
         gosubstack[gosubindex++] = (unsigned char *)rti;                             // return from the subroutine to the dummy IRETURN command
         g_LocalIndex++;                                               // return from the subroutine will decrement g_LocalIndex
         skipelement(intaddr);                                       // point to the body of the subroutine
@@ -6112,7 +6117,7 @@ int __not_in_flash_func(check_interrupt)(void) {
     if(Option.KeyboardConfig)CheckKeyboard();
 #endif    
     if(!InterruptUsed) return 0;                                    // quick exit if there are no interrupts set
-    if(InterruptReturn != NULL || CurrentLinePtr == NULL) return 0; // skip if we are in an interrupt or in immediate mode
+    if(InterruptReturn != NULL || CurrentLineOffset == NULL) return 0; // skip if we are in an interrupt or in immediate mode
     return checkdetailinterrupts();
 }
 

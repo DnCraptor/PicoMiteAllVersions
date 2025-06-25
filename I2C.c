@@ -518,7 +518,7 @@ void CheckI2CKeyboard(int noerror, int read) {
       noI2C = 1;
       return;
     }
-  if (CurrentLinePtr) error("I2C Keyboard not responding");
+  if (CurrentLineOffset) error("I2C Keyboard not responding");
   if (Option.KeyboardConfig == CONFIG_I2C) {
     MMPrintString("I2C Keyboard not responding");
     MMPrintString("\r\n");
@@ -578,7 +578,7 @@ void RtcGetTime(int noerror) {
       noRTC = 1;
       return;
     }
-  if (CurrentLinePtr) error("RTC not responding");
+  if (CurrentLineOffset) error("RTC not responding");
   if (Option.RTC) {
     MMPrintString("RTC not responding");
     MMPrintString("\r\n");
@@ -618,7 +618,7 @@ void MIPS16 cmd_rtc(void) {
       if(!repeat)break;
     }
     if(noRTC){
-      if (CurrentLinePtr) error("RTC not responding");
+      if (CurrentLineOffset) error("RTC not responding");
       if (Option.RTC) {
         MMPrintString("RTC not responding");
         MMPrintString("\r\n");
@@ -2316,9 +2316,9 @@ void MIPS16 cmd_camera(void) {
     char * buff = GetTempMemory(160 * 120 * 2);
     char * k = buff;
     c.rgb = 0;
-    disable_interrupts_pico();
+    open_prog_file();
     capture(buff);
-    enable_interrupts_pico();
+    close_prog_file();
     char * linebuff = NULL;
     if (scale) linebuff = GetTempMemory(160 * 3);
     for (int y = ys; y < 120 * scale + ys; y += scale) {
@@ -2368,9 +2368,9 @@ void MIPS16 cmd_camera(void) {
     }
     char * buff = GetTempMemory(160 * 120 * 2);
     c.rgb = 0;
-    disable_interrupts_pico();
+    open_prog_file();
     capture(buff);
-    enable_interrupts_pico();
+    close_prog_file();
     char * linebuff = GetTempMemory(160 * 3 * scale);
     char * k = buff;
     for (int y = ys; y < 120 * scale + ys; y += scale) {

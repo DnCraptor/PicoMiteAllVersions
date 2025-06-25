@@ -43,7 +43,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #define ASMMAX 6400 // maximum number of bytes that can be copied or set by assembler routines
 #define MAXCPY 3200 // tuned maximum number of bytes to copy using ZCOPY
 
-extern const uint8_t *flash_progmemory;
+extern const FSIZE_t lba_progmemory;
 // memory management parameters
 
 // allocate static memory for programs, variables and the heap
@@ -157,7 +157,7 @@ short g_StrTmpIndex = 0;                                                // index
 ************************************************************************************************************************/
 /*  @endcond */
 void MIPS16 cmd_memory(void) {
-	unsigned char *p,*tp;
+	unsigned char *tp;
     tp = checkstring(cmdline, (unsigned char *)"PACK");
     if(tp){
         getargs(&tp,7,(unsigned char *)",");
@@ -327,6 +327,7 @@ void MIPS16 cmd_memory(void) {
     }
     tp = checkstring(cmdline, (unsigned char *)"COPY");
     if(tp){
+        uint8_t* p;
     	if((p = checkstring(tp, (unsigned char *)"INTEGER"))) {
     		int stepin=1, stepout=1;
         	getargs(&p,9,(unsigned char *)",");
@@ -617,22 +618,24 @@ func:
     if(FontNbr && FontSizeK == 0) FontPercent = FontSizeK = 1;                      // adjust if it is zero and we have some functions
 
     // count the number of lines in the program
-    p = ProgMemory;
+    FSIZE_t p = ProgMemory;
     i = 0;
-	while(*p != 0xff) {                                             // skip if program memory is erased
-        if(*p == 0) p++;                                            // if it is at the end of an element skip the zero marker
-        if(*p == 0) break;                                          // end of the program or module
-        if(*p == T_NEWLINE) {
+    open_prog_file();
+   	while(SDByte(p) != 0xff) {                                             // skip if program memory is erased
+        if(SDByte(p) == 0) p++;                                            // if it is at the end of an element skip the zero marker
+        if(SDByte(p) == 0) break;                                          // end of the program or module
+        if(SDByte(p) == T_NEWLINE) {
             i++;                                                    // count the line
             p++;                                                    // skip over the newline token
         }
-        if(*p == T_LINENBR) p += 3;                                 // skip over the line number
-		skipspace(p);
-		if(p[0] == T_LABEL) p += p[1] + 2;							// skip over the label
-		while(*p) p++;												// look for the zero marking the start of an element
+        if(SDByte(p) == T_LINENBR) p += 3;                                 // skip over the line number
+       	skipspace2(p);
+   		if(SDByte(p) == T_LABEL) p += SDByte(p) + 2;							// skip over the label
+	    skipelement2(p);										// look for the zero marking the start of an element
     }
-    ProgramSize = ((p - ProgMemory) + 512)/1024;
-    ProgramPercent = ((p - ProgMemory) * 100)/(MAX_PROG_SIZE /*+ SAVEDVARS_FLASH_SIZE*/);
+    close_prog_file();
+    ProgramSize = ((p - ProgMemory) + 512) / 1024;
+    ProgramPercent = ((p - ProgMemory) * 100) / (MAX_PROG_SIZE);
     if(ProgramPercent > 100) ProgramPercent = 100;
     if(i && ProgramSize == 0) ProgramPercent = ProgramSize = 1;                                        // adjust if it is zero and we have some lines
 
@@ -673,53 +676,67 @@ func:
 
      //Get the library size
     LibrarySizeK = LibraryPercent = 0;
-    LibraryMaxK= MAX_PROG_SIZE/1024;
-    if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE) {
-           i = 0;
-           // first count the normal program code residing in the Library
-           p = LibMemory;
-           while(!(p[0] == 0 && p[1] == 0)) {
+    LibraryMaxK= MAX_PROG_SIZE / 1024;
+    if ( Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE ) {
+        FIL f;
+        if (FR_OK == f_open(&f, "/tmp/picoMite.prog", FA_READ)) {
+            i = 0;
+            // first count the normal program code residing in the Library
+            p = LibMemory;
+            UINT br;
+            uint8_t pv, pv1;
+            f_lseek(&f, p);
+            f_read(&f, &pv, 1, &br);
+            f_read(&f, &pv1, 1, &br);
+            while(!(pv == 0 && pv1 == 0) && f_eof(&f)) {
                	p++; i++;
-           }
-           while(*p == 0){ // the end of the program can have multiple zeros -count them
-               p++;i++;
-           }
-           p++; i++;    //get 0xFF that ends the program and count it
-           while((unsigned int)p & 0b11) { //count to the next word boundary
-           	p++;i++;
-           }
+                pv1 = pv;
+                f_read(&f, &pv1, 1, &br);
+            }
+            f_lseek(&f, p);
+            f_read(&f, &pv, 1, &br);
+            while(pv == 0) { // the end of the program can have multiple zeros -count them
+                p++; i++;
+                f_read(&f, &pv, 1, &br);
+            }
+            p++; i++;    //get 0xFF that ends the program and count it
+            f_read(&f, &pv, 1, &br);
+            while(p & 0b11) { //count to the next word boundary
+           	    p++; i++;
+            }
                
-           //Now add the binary used for CSUB and Fonts
-           if(CFunctionLibrary != NULL) {
-             j=0;
-             pint = (unsigned int *)CFunctionLibrary;
-             while(*pint != 0xffffffff) {
-              pint++;                                      //step over the address or Font No.
-              j += *pint + 8;                              //Read the size
-              pint += (*pint + 4) / sizeof(unsigned int);  //set pointer to start of next CSUB/Font
-             }
-             i=i+j;
-           }
+            //Now add the binary used for CSUB and Fonts
+            if(CFunctionLibrary != NULL) {
+                j = 0;
+                pint = (unsigned int *)CFunctionLibrary;
+                while(*pint != 0xffffffff) {
+                    pint++;                                      //step over the address or Font No.
+                    j += *pint + 8;                              //Read the size
+                    pint += (*pint + 4) / sizeof(unsigned int);  //set pointer to start of next CSUB/Font
+                }
+                i = i+j;
+            }
 
-
-           LibrarySizeK=(i+512)/1024;
-           LibraryPercent = (LibrarySizeK * 100)/LibraryMaxK;
-           if(LibrarySizeK == 0) LibrarySizeK = 1;              // adjust if it is zero and we have any library
-           if(LibraryPercent == 0) LibraryPercent = 1;          // adjust if it is zero and we have any library
+            LibrarySizeK   = (i+512) / 1024;
+            LibraryPercent = (LibrarySizeK * 100) / LibraryMaxK;
+            if(LibrarySizeK == 0) LibrarySizeK = 1;              // adjust if it is zero and we have any library
+            if(LibraryPercent == 0) LibraryPercent = 1;          // adjust if it is zero and we have any library
      
-           MMPrintString("\r\nLibrary:\r\n");
+            MMPrintString("\r\nLibrary:\r\n");
         
-           IntToStrPad((char *)inpbuf, LibrarySizeK, ' ', 4, 10); strcat((char *)inpbuf, "K (");
-	       //IntToStrPad(inpbuf, (128*1024  + 512)/1024  - LibrarySizeK, ' ', 4, 10); strcat((char *)inpbuf, "K (");
-	       IntToStrPad((char *)inpbuf + strlen((char *)inpbuf), LibraryPercent, ' ', 2, 10); strcat((char *)inpbuf, "%) "); strcat((char *)inpbuf, "Library\r\n");
-	       IntToStrPad((char *)inpbuf + strlen((char *)inpbuf), LibraryMaxK-LibrarySizeK, ' ', 4, 10); strcat((char *)inpbuf, "K (");
-	       IntToStrPad((char *)inpbuf + strlen((char *)inpbuf), 100 - LibraryPercent, ' ', 2, 10); strcat((char *)inpbuf, "%) Free\r\n");
-	       MMPrintString((char *)inpbuf);
-       }
+            IntToStrPad((char *)inpbuf, LibrarySizeK, ' ', 4, 10); strcat((char *)inpbuf, "K (");
+	        //IntToStrPad(inpbuf, (128*1024  + 512)/1024  - LibrarySizeK, ' ', 4, 10); strcat((char *)inpbuf, "K (");
+	        IntToStrPad((char *)inpbuf + strlen((char *)inpbuf), LibraryPercent, ' ', 2, 10); strcat((char *)inpbuf, "%) "); strcat((char *)inpbuf, "Library\r\n");
+	        IntToStrPad((char *)inpbuf + strlen((char *)inpbuf), LibraryMaxK-LibrarySizeK, ' ', 4, 10); strcat((char *)inpbuf, "K (");
+	        IntToStrPad((char *)inpbuf + strlen((char *)inpbuf), 100 - LibraryPercent, ' ', 2, 10); strcat((char *)inpbuf, "%) Free\r\n");
+	        MMPrintString((char *)inpbuf);
+            f_close(&f);
+        }
+    }
    
 
-     MMPrintString("\r\nSaved Variables:\r\n");
-	 if(SavedVarCnt) {
+    MMPrintString("\r\nSaved Variables:\r\n");
+	if(SavedVarCnt) {
 	        IntToStrPad((char *)inpbuf, SavedVarSizeK, ' ', 4, 10); strcat((char *)inpbuf, "K (");
 	        IntToStrPad((char *)inpbuf + strlen((char *)inpbuf), SavedVarPercent, ' ', 2, 10); strcat((char *)inpbuf, "%)");
 	        IntToStrPad((char *)inpbuf + strlen((char *)inpbuf), SavedVarCnt, ' ', 2, 10); strcat((char *)inpbuf, " Saved Variable"); strcat((char *)inpbuf, SavedVarCnt == 1 ? " (":"s (");
@@ -796,13 +813,13 @@ void m_alloc(int type) {
         case M_PROG:
 #ifdef rp2350
 #ifndef PICOMITEWEB
-                        if(PSRAMsize)memset((uint8_t *)PSRAMbase,0,PSRAMsize);
+                        if(PSRAMsize) memset((uint8_t *)PSRAMbase,0,PSRAMsize);
 #endif
 #endif
         case M_LIMITED:    // this is called initially in InitBasic() to set the base pointer for program memory
                         // everytime the program size is adjusted up or down this must be called to check for memory overflow
-                        ProgMemory = (uint8_t *)flash_progmemory;
-                        memset(MMHeap,0,heap_memory_size);
+                        ProgMemory = lba_progmemory;
+                        memset(MMHeap, 0, heap_memory_size);
 #ifdef GUICONTROLS
                         if(Option.MaxCtrls) Ctrl=(struct s_ctrl *)CTRLS;
 #endif
@@ -810,7 +827,7 @@ void m_alloc(int type) {
                         
         case M_VAR:     // this must be called to initialises the variable memory pointer
                         // everytime the variable table is increased this must be called to verify that enough memory is free
-                        memset(g_vartbl,0,MAXVARS * sizeof(struct s_vartbl));
+                        memset(g_vartbl, 0, MAXVARS * sizeof(struct s_vartbl));
                         break;
     }
 }

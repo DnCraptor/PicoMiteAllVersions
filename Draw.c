@@ -314,10 +314,10 @@ void MIPS16 cmd_guiMX170(void) {
             Option.TOUCH_YZERO = getinteger(argv[4]);
             Option.TOUCH_XSCALE = getinteger(argv[6]) / 10000.0;
             Option.TOUCH_YSCALE = getinteger(argv[8]) / 10000.0;
-            if(!CurrentLinePtr) SaveOptions();
+            if(!CurrentLineOffset) SaveOptions();
             return;
         } else {
-            if(CurrentLinePtr) error("Invalid in a program");
+            if(CurrentLineOffset) error("Invalid in a program");
             Option.TOUCH_SWAPXY = 0;
             Option.TOUCH_XZERO = 0;
             Option.TOUCH_YZERO = 0;
@@ -6221,7 +6221,7 @@ void MIPS16 cmd_font(void) {
         SetFont(((getint(argv[0], 1, FONT_TABLE_SIZE) - 1) << 4) | getint(argv[2], 1, 15));
     else
         SetFont(((getint(argv[0], 1, FONT_TABLE_SIZE) - 1) << 4) | 1);
-    if(Option.DISPLAY_CONSOLE && !CurrentLinePtr) {                 // if we are at the command prompt on the LCD
+    if(Option.DISPLAY_CONSOLE && !CurrentLineOffset) {                 // if we are at the command prompt on the LCD
 #ifdef PICOMITEVGA
         if(gui_font_height>=8 && (gui_font_width % 8)==0){
             ytileheight=gui_font_height;
@@ -6292,7 +6292,7 @@ void cmd_colour(void) {
     if(argc == 3)  gui_bcolour = getColour((char *)argv[2], 0);
     last_fcolour = gui_fcolour;
     last_bcolour = gui_bcolour;
-    if(!CurrentLinePtr) {
+    if(!CurrentLineOffset) {
         PromptFC = gui_fcolour;
         PromptBC = gui_bcolour;
     }

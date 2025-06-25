@@ -46,6 +46,7 @@ extern "C" {
 #endif
 
 #include "configuration.h"                          // memory configuration defines for the particular hardware this is running on
+#include "ff.h"
 
 // Types used to define an item of data.  Often they are ORed together.
 // Used in tokens, variables and arguments to functions
@@ -157,10 +158,12 @@ extern unsigned char DefaultType;                        // the default type if 
 // skip whitespace
 // finishes with x pointing to the next non space char
 #define skipspace(x)    while(*x == ' ') x++
+#define skipspace2(x)    while(SDByte(x) == ' ') x++
 
 // skip to the next element
 // finishes pointing to the zero unsigned char that preceeds an element
 #define skipelement(x)  while(*x) x++
+#define skipelement2(x)  while(SDByte(x)) x++
 
 // skip to the next line
 // skips text and and element separators until it is pointing to the zero char marking the start of a new line.
@@ -205,8 +208,9 @@ extern int ProgMemSize;
 
 extern int NextData;                            // used to track the next item to read in DATA & READ stmts
 extern unsigned char *NextDataLine;                      // used to track the next line to read in DATA & READ stmts
-extern unsigned char *CurrentLinePtr,*SaveCurrentLinePtr;                    // pointer to the current line being executed
-extern unsigned char *ContinuePoint;                     // Where to continue from if using the continue statement
+extern FSIZE_t CurrentLineOffset;
+extern unsigned char *SaveCurrentLineOffset;                    // pointer to the current line being executed
+extern FSIZE_t ContinuePoint;                     // Where to continue from if using the continue statement
 extern int ProgramChanged;                                                 // true if the program in memory has been changed and not saved
 
 extern unsigned char inpbuf[];                           // used to store user keystrokes until we have a line
@@ -220,7 +224,6 @@ extern int targ;                                // Global type of argument (stri
 
 extern int cmdtoken;                            // Token number of the command
 extern unsigned char *cmdline;                           // Command line terminated with a zero unsigned char and trimmed of spaces
-extern unsigned char *nextstmt;                          // Pointer to the next statement to be executed.
 extern unsigned char *ep;                                // Pointer to the argument to a function
 
 extern int OptionErrorSkip;                    // value of OPTION ERROR
@@ -265,13 +268,14 @@ unsigned char *GetNextCommand(unsigned char *p, unsigned char **CLine, unsigned 
 int CheckEmpty(char *p);
 unsigned char *evaluate(unsigned char *p, MMFLOAT *fa, long long int  *ia, unsigned char **sa, int *ta, int noerror);
 unsigned char *doexpr(unsigned char *p, MMFLOAT *fa, long long int  *ia, unsigned char **sa, int *oo, int *t);
-void DefinedSubFun(int iscmd, unsigned char *cmd, int index, MMFLOAT *fa, long long int  *i64, unsigned char **sa, int *t);
+void DefinedSubFun(int iscmd, FSIZE_t cmd, int index, MMFLOAT *fa, long long int  *i64, unsigned char **sa, int *t);
 MMFLOAT getnumber(unsigned char *p);
 long long int  getinteger(unsigned char *p);
 long long int getint(unsigned char *p, long long int min, long long int max);
 unsigned char *getstring(unsigned char *p);
 void  tokenise(int console);
-void ExecuteProgram(unsigned char *);
+void ExecuteProgram(uint8_t*);
+void ExecuteProgramSD(FSIZE_t);
 void AddProgramLine(int append);
 unsigned char *findline(int, int);
 unsigned char *findlabel(unsigned char *labelptr);
@@ -295,17 +299,18 @@ unsigned char *getCstring(unsigned char *p);
 unsigned char *getFstring(unsigned char *p);
 int IsValidLine(int line);
 void InsertLastcmd(unsigned char *s);
-int  CountLines(unsigned char *target);
+int  CountLines(FSIZE_t target);
 extern jmp_buf ErrNext;   
 int FindSubFun(unsigned char *p, int type);
+int FindSubFunSD(FSIZE_t p, int type);
 void PrepareProgram(int ErrAbort);
 void MMfputs(unsigned char *p, int filenbr);
 extern int TempStringClearStart;                                           // used to prevent clearing of space in an expression that called a FUNCTION
-extern unsigned char *LibMemory;                           // library memory
-extern unsigned char *ProgMemory;                           // program memory
+extern FSIZE_t LibMemory;                           // library memory
+extern FSIZE_t ProgMemory;                           // program memory
 extern int PSize;                               // size of the program in program memory
 extern unsigned char *cmdline;                           // Command line terminated with a zero unsigned char and trimmed of spaces
-extern unsigned char *nextstmt;                          // Pointer to the next statement to be executed.
+extern FSIZE_t nextstmt;                          // Pointer to the next statement to be executed.
 extern unsigned char PromptString[MAXPROMPTLEN];                                    // the prompt for input, an empty string means use the default
 extern int multi;
 extern void str_replace(char *target, const char *needle, const char *replacement, uint8_t ignore);

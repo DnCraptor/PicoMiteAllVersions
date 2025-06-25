@@ -337,7 +337,7 @@ void edit(unsigned char *cmdline, bool cmdfile) {
         strcpy(name,(char *)getFstring(argv[0]));
         filename=name;
     }
-    if(CurrentLinePtr && cmdfile) error("Invalid in a program");
+    if(CurrentLineOffset && cmdfile) error("Invalid in a program");
     if(argc==0 && !cmdfile)error("Syntax");
     if(!cmdfile){
         SaveContext();
@@ -1978,12 +1978,12 @@ void editDisplayMsg(unsigned char *msg) {
 
 // save the program in the editing buffer into the program memory
 void SaveToProgMemory(void) {
-    SaveProgramToFlash(EdBuff, true);
+    SaveProgramToSD(EdBuff, true);
     ClearProgram(true);
     StartEditPoint = (unsigned char *)(edy + cury);                            // record out position in case the editor is invoked again
     StartEditChar = edx + curx;
     // bugfix for when the edit point is a space
-    // the space could be at the end of a line which will be trimmed in SaveProgramToFlash() leaving StartEditChar referring to something not there
+    // the space could be at the end of a line which will be trimmed in SaveProgramToSD() leaving StartEditChar referring to something not there
     // this is not a serious issue so fix the bug in the MX470 only because it has plenty of flash
     while(StartEditChar > 0 && txtp > EdBuff && *(--txtp) == ' ') {
         StartEditChar--;

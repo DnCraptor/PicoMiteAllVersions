@@ -1406,7 +1406,7 @@ process:
  */
 bool __no_inline_not_in_flash_func(bb_get_bootsel_button)() {
     const uint CS_PIN_INDEX = 1;
-    disable_interrupts_pico();
+    open_prog_file();
     hw_write_masked(&ioqspi_hw->io[CS_PIN_INDEX].ctrl,
                     GPIO_OVERRIDE_LOW << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
                     IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
@@ -1415,7 +1415,7 @@ bool __no_inline_not_in_flash_func(bb_get_bootsel_button)() {
     hw_write_masked(&ioqspi_hw->io[CS_PIN_INDEX].ctrl,
                     GPIO_OVERRIDE_NORMAL << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
                     IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
-    enable_interrupts_pico();
+    close_prog_file();
 
     return button_state;
 }
@@ -2972,9 +2972,9 @@ void cmd_WS2812(void){
     	}
     	p-=(nbr*colours);
         while(time_us_64()<endreset){}
-        disable_interrupts_pico();
+        open_prog_file();
         WS2812e(gppin, T1H, T1L, T0H, T0L, nbr*colours, (char *)p);
-        enable_interrupts_pico();
+        close_prog_file();
 }
 /* 
  * @cond
@@ -3132,9 +3132,9 @@ void cmd_device(void){
         int bittime=16777215 + 12  - (ticks_per_second/baudrate) ;
         int half = 16777215 + 12  - (ticks_per_second/(baudrate<<1)) ;
         if(!(gpio_get_all64() & gppin))error("Framing error");
-        disable_interrupts_pico();
+        open_prog_file();
         int istat=serialrx(gppin, string, timeout, bittime, half, maxchars, termchars);
-        enable_interrupts_pico();
+        close_prog_file();
         if(type & T_INT)*(int64_t *)status=(int64_t)istat;
         else *(MMFLOAT *)status=(MMFLOAT)istat;
         return;
@@ -3157,9 +3157,9 @@ void cmd_device(void){
         if(ExtCurrentConfig[pin] == EXT_NOT_CONFIG)ExtCfg(pin, EXT_DIG_OUT, 0);
         gpio_set_mask64(gppin);                                    // send the start bit
         int bittime=16777215 + 12  - (ticks_per_second/baudrate) ;
-        disable_interrupts_pico();
+        open_prog_file();
         serialtx(gppin,string, bittime);
-        enable_interrupts_pico();
+        close_prog_file();
 		return;
 	}
 	tp = checkstring(cmdline, (unsigned char *)"BITSTREAM");
@@ -3196,9 +3196,9 @@ void cmd_device(void){
             data[i]=16777215 + setuptime-((data[i]*ticks_per_millisecond)/1000) ;
         }
 //        data[0]+=((ticks_per_millisecond/2000)+(250000-Option.CPU_Speed)/1000);
-        disable_interrupts_pico();
+        open_prog_file();
         bitstream(gppin,data,num);
-        enable_interrupts_pico();
+        close_prog_file();
 		return;
 	}
     error("Syntax");

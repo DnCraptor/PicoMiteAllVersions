@@ -231,9 +231,9 @@ unsigned char PulsePin[NBR_PULSE_SLOTS];
 unsigned char PulseDirection[NBR_PULSE_SLOTS];
 int PulseCnt[NBR_PULSE_SLOTS];
 int PulseActive;
-const uint8_t *flash_target_contents = (const uint8_t *) (XIP_BASE + FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE);
-const uint8_t *flash_progmemory = (const uint8_t *) (XIP_BASE + PROGSTART);
-const uint8_t *flash_libmemory = (const uint8_t *) (XIP_BASE + PROGSTART - MAX_PROG_SIZE);
+const FSIZE_t lba_target_contents = 0;
+const FSIZE_t lba_progmemory = PROGSTART;
+const FSIZE_t lba_libmemory = PROGSTART - MAX_PROG_SIZE;
 int ticks_per_second; 
 int InterruptUsed;
 int calibrate=0;
@@ -456,7 +456,7 @@ void __not_in_flash_func(routinechecks)(void){
 #endif
     }
     if(CurrentlyPlaying == P_MOD) checkWAVinput();
-    if(++when & 7 && CurrentLinePtr) return;
+    if(++when & 7 && CurrentLineOffset) return;
 #ifdef USBKEYBOARD
     if(USBenabled){
         if(mSecTimer>2000){
@@ -540,7 +540,7 @@ void __not_in_flash_func(routinechecks)(void){
         NunchuckTimer=0;
     }
 /*frame
-    if(frame && CurrentLinePtr)ShowCursor(framecursor);
+    if(frame && CurrentLineOffset)ShowCursor(framecursor);
 */
 }
 
@@ -1818,14 +1818,14 @@ void PFltComma(MMFLOAT n) {
 void sigbus(void){
     MMPrintString("Error: Invalid address - resetting\r\n");
 	uSec(250000);
-	disable_interrupts_pico();
-//	flash_range_erase(PROGSTART, MAX_PROG_SIZE);
+	open_prog_file();
+//	SDEraseBlock(PROGSTART, MAX_PROG_SIZE);
     LoadOptions();
     if(Option.NoReset==0){
         Option.Autorun=0;
         SaveOptions();
     }
-	enable_interrupts_pico();
+	close_prog_file();
     memset(inpbuf,0,STRINGSIZE);
     SoftReset();
 }
@@ -4116,7 +4116,7 @@ int MIPS16 main(){
         (Option.heartbeatpin==0 && Option.NoHeartbeat==0) ||
         !(Option.Magic==MagicKey)
         ){
-        ResetAllFlash();              // init the options if this is the very first startup
+        ResetAll();              // init the options if this is the very first startup
         _excep_code=0;
         watchdog_enable(1, 1);
         while(1);
@@ -4133,7 +4133,7 @@ int MIPS16 main(){
     }
 #endif
     m_alloc(M_PROG);                                           // init the variables for program memory
-    LibMemory = (uint8_t *)flash_libmemory;
+    LibMemory = lba_libmemory;
     uSec(100);
     if(_excep_code == RESET_CLOCKSPEED) {
 #ifdef PICOMITEVGA
@@ -4221,7 +4221,7 @@ int MIPS16 main(){
 #endif
 #endif
     if(clock_get_hz(clk_usb)!=48000000){
-        ResetAllFlash();              // init the options if this is the very first startup
+        ResetAll();              // init the options if this is the very first startup
         _excep_code=INVALID_CLOCKSPEED;
         watchdog_enable(1, 1);
         while(1);
@@ -4323,8 +4323,8 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
     PromptBC=gui_bcolour=Option.DefaultBC;
     InitHeap(true);              										// initilise memory allocation
     uSecFunc(1000);
-    disable_interrupts_pico();
-    enable_interrupts_pico();
+    open_prog_file();
+    close_prog_file();
     mSecTimer=time_us_64()/1000;
     DISPLAY_TYPE = Option.DISPLAY_TYPE;
     // negative timeout means exact delay (rather than delay between callbacks)
@@ -4424,6 +4424,7 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
         #endif
     #endif
 #endif
+    open_prog_file();
     if(!(_excep_code == RESTART_NOAUTORUN || _excep_code == INVALID_CLOCKSPEED || _excep_code == SCREWUP_TIMEOUT || _excep_code == WATCHDOG_TIMEOUT || (_excep_code==POSSIBLE_WATCHDOG && watchdog_caused_reboot()))){
         if(Option.Autorun==0 ){
             if(!(_excep_code == RESET_COMMAND || _excep_code == SOFT_RESET)){
@@ -4432,9 +4433,9 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
             }
         } else {
             if(Option.Autorun!=MAXFLASHSLOTS+1){
-                ProgMemory=(unsigned char *)(flash_target_contents+(Option.Autorun-1)*MAX_PROG_SIZE);
+                ProgMemory = lba_target_contents + (Option.Autorun - 1) * MAX_PROG_SIZE;
             }
-            if(*ProgMemory != 0x01 ) {
+            if(SDByte(ProgMemory) != 0x01 ) {
                 MMPrintString((char *)banner);
                 MMPrintString((char *)COPYRIGHT); // print sign on message
             }
@@ -4513,7 +4514,7 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
 	    clearrepeat();
 #endif	    
         ScrewUpTimer = 0;
-        ProgMemory=(uint8_t *)flash_progmemory;
+        ProgMemory = lba_progmemory;
         ContinuePoint = nextstmt;                               // in case the user wants to use the continue command
 		*tknbuf = 0;											// we do not want to run whatever is in the token buffer
 		optionangle=1.0;
@@ -4521,7 +4522,7 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
         savewatchdog = WatchdogSet = false;
 		char *ptr = findvar((unsigned char *)"MM.ENDLINE$", V_NOFIND_NULL);
         if(ptr && *ptr){
-            CurrentLinePtr=0;
+            CurrentLineOffset=0;
             memcpy(inpbuf,ptr,*ptr+1);
             *ptr=0;
             MtoC(inpbuf);
@@ -4530,7 +4531,7 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
             goto autorun;
         }
     } else {
-        if(*ProgMemory == 0x01 ) ClearVars(0,true);
+        if(SDByte(ProgMemory) == 0x01 ) ClearVars(0, true);
         else {
             ClearProgram(true);
         }
@@ -4540,6 +4541,7 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
         WebConnect();
     }
     #endif
+    close_prog_file();
 #ifdef PICOMITE
     SPIatRisk=((Option.DISPLAY_TYPE>I2C_PANEL && Option.DISPLAY_TYPE<BufferedPanel) && Option.SD_CLK_PIN==0);
 #endif
@@ -4551,13 +4553,16 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
         if(Option.Autorun && _excep_code != RESTART_DOAUTORUN) {
             ClearRuntime(true);
             PrepareProgram(true);
-            if(*ProgMemory == 0x01 ){
+            open_prog_file();
+            if(SDByte(ProgMemory) == 0x01 ) {
+                close_prog_file();
                 memset(tknbuf,0,STRINGSIZE);
                 unsigned short tkn=GetCommandValue((unsigned char *)"RUN");
                 tknbuf[0] = (tkn & 0x7f ) + C_BASETOKEN;
                 tknbuf[1] = (tkn >> 7) + C_BASETOKEN; //tokens can be 14-bit
                 goto autorun;
             }  else {
+                close_prog_file();
                 Option.Autorun=0;
                 SaveOptions();
             }       
@@ -4575,7 +4580,7 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
         EchoOption = true;
         g_LocalIndex = 0;                                             // this should not be needed but it ensures that all space will be cleared
         ClearTempMemory();                                          // clear temp string space (might have been used by the prompt)
-        CurrentLinePtr = NULL;                                      // do not use the line number in error reporting
+        CurrentLineOffset = 0;                                      // do not use the line number in error reporting
         if(MMCharPos > 1) MMPrintString("\r\n");                    // prompt should be on a new line
         while(Option.PIN && !IgnorePIN) {
             _excep_code = PIN_RESTART;
@@ -4629,7 +4634,7 @@ autorun:
         if(tkn==GetCommandValue((unsigned char *)"RUN") || tkn==GetCommandValue((unsigned char *)"EDIT") || tkn==GetCommandValue((unsigned char *)"AUTOSAVE"))i=1;
         if (setjmp(jmprun) != 0) {
             PrepareProgram(false);
-            CurrentLinePtr = 0;
+            CurrentLineOffset = 0;
         }
         ExecuteProgram(tknbuf);                                     // execute the line straight away
         if(i){
@@ -4657,27 +4662,26 @@ void stripcomment(char *p){
 }
 
 // takes a pointer to RAM containing a program (in clear text) and writes it to memory in tokenised format
-void MIPS16 SaveProgramToFlash(unsigned char *pm, int msg) {
+void MIPS16 SaveProgramToSD(unsigned char *pm, int msg) {
     unsigned char *p, fontnbr, prevchar = 0, buf[STRINGSIZE];
     unsigned short endtoken, tkn;
-    int nbr, i, j, n, SaveSizeAddr;
+    int nbr, i, j, n;
+    FSIZE_t SaveSizeAddr;
     bool continuation=false;
     multi=false;
-    uint32_t storedupdates[MAXCFUNCTION], updatecount=0, realflashsave;
+    uint32_t storedupdates[MAXCFUNCTION], updatecount=0;
+    FSIZE_t realflashsave;
     initFonts();
-#ifdef rp2350
-    __dsb();
-#endif
 #ifdef USBKEYBOARD
 	clearrepeat();
 #endif	
     memcpy(buf, tknbuf, STRINGSIZE);                                // save the token buffer because we are going to use it
-    FlashWriteInit(PROGRAM_FLASH);
-    flash_range_erase(realflashpointer, MAX_PROG_SIZE);
+    SDWriteInit(PROGRAM_FLASH);
+    SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
     j=MAX_PROG_SIZE/4;
-    int *pp=(int *)(flash_progmemory);
+    int *pp=(int *)(lba_progmemory);
         while(j--)if(*pp++ != 0xFFFFFFFF){
-            enable_interrupts_pico();
+            close_prog_file();
             error("Flash erase problem");
         }
     nbr = 0;
@@ -4685,7 +4689,7 @@ void MIPS16 SaveProgramToFlash(unsigned char *pm, int msg) {
     while(*pm) {
 contloop:
         if(continuation){
-            p=&inpbuf[strlen((char *)inpbuf)];
+            p = &inpbuf[strlen((char *)inpbuf)];
             continuation=false;
         }
         else p = inpbuf;
@@ -4714,14 +4718,15 @@ contloop:
         tokenise(false);                                            // turn into executable code
         p = tknbuf;
         while(!(p[0] == 0 && p[1] == 0)) {
-            FlashWriteByte(*p++); nbr++;
-
-            if((int)((char *)realflashpointer - (uint32_t)PROGSTART) >= MAX_PROG_SIZE - 5)  goto exiterror;
+            SDWriteByte(*p++); nbr++;
+            if((int)((char *)real_lba_pointer - (uint32_t)PROGSTART) >= MAX_PROG_SIZE - 5) {
+                goto exiterror;
+            }
         }
-        FlashWriteByte(0); nbr++;                              // terminate that line in flash
+        SDWriteByte(0); nbr++;                              // terminate that line in flash
     }
-    FlashWriteByte(0);
-    FlashWriteAlign();                                            // this will flush the buffer and step the flash write pointer to the next word boundary
+    SDWriteByte(0);
+    SDWriteAlign();                                            // this will flush the buffer and step the flash write pointer to the next word boundary
     // now we must scan the program looking for CFUNCTION/CSUB/DEFINEFONT statements, extract their data and program it into the flash used by  CFUNCTIONs
      // programs are terminated with two zero bytes and one or more bytes of 0xff.  The CFunction area starts immediately after that.
      // the format of a CFunction/CSub/Font in flash is:
@@ -4730,228 +4735,236 @@ contloop:
      //   Unsigned Int - The Offset (in words) to the main() function (ie, the entry point to the CFunction/CSub).  Omitted in a font.
      //   word1..wordN - The CFunction/CSub/Font code
      // The next CFunction/CSub/Font starts immediately following the last word of the previous CFunction/CSub/Font
-    int firsthex=1;
-    realflashsave= realflashpointer;
-    p = (unsigned char *)flash_progmemory;                                              // start scanning program memory
-    while(*p != 0xff) {
-    	nbr++;
-        if(*p == 0) p++;                                            // if it is at the end of an element skip the zero marker
-        if(*p == 0) break;                                          // end of the program
-        if(*p == T_NEWLINE) {
-            CurrentLinePtr = p;
-            p++;                                                    // skip the newline token
-        }
-        if(*p == T_LINENBR) p += 3;                                 // step over the line number
+    int firsthex = 1;
+    realflashsave = real_lba_pointer;
+    {
+        FSIZE_t p = lba_progmemory;                                              // start scanning program memory
+        while(SDByte(p) != 0xff) {
+            nbr++;
+            if(SDByte(p) == 0) p++;                                            // if it is at the end of an element skip the zero marker
+            if(SDByte(p) == 0) break;                                          // end of the program
+            if(SDByte(p) == T_NEWLINE) {
+                CurrentLineOffset = p;
+                p++;                                                    // skip the newline token
+            }
+            if(SDByte(p) == T_LINENBR) p += 3;                                 // step over the line number
 
-        skipspace(p);
-        if(*p == T_LABEL) {
-            p += p[1] + 2;                                          // skip over the label
-            skipspace(p);                                           // and any following spaces
+            skipspace2(p);
+            if(SDByte(p) == T_LABEL) {
+                p += SDByte(p+1) + 2;                                          // skip over the label
+                skipspace2(p);                                           // and any following spaces
+            }
+            tkn = SDByte(p) & 0x7f;
+            tkn |= ((unsigned short)(SDByte(p+1) & 0x7f)<<7);
+            if(tkn == cmdCSUB || tkn == GetCommandValue((unsigned char *)"DefineFont")) {      // found a CFUNCTION, CSUB or DEFINEFONT token
+                if(tkn == GetCommandValue((unsigned char *)"DefineFont")) {
+                endtoken = GetCommandValue((unsigned char *)"End DefineFont");
+                p += 2;                                                // step over the token
+                skipspace2(p);
+                if(SDByte(p) == '#') p++;
+                uint8_t buf[MAXSTRLEN + 1];
+                SDBlock(p, buf, sizeof(buf));
+                *(uint8_t*)(buf + sizeof(buf) - 1) = 0; //  guarantee it is null-terminated
+                fontnbr = getint(buf, 1, FONT_TABLE_SIZE);
+                                                    // font 6 has some special characters, some of which depend on font 1
+                if(fontnbr == 1 || fontnbr == 6 || fontnbr == 7) {
+                    close_prog_file();
+                    error("Cannot redefine fonts 1, 6 or 7");
+                }
+                real_lba_pointer+=4;
+                skipelement2(p);                                     // go to the end of the command
+                p--;
+                } else {
+                    endtoken = GetCommandValue((unsigned char *)"End CSub");
+                    real_lba_pointer+=4;
+                    fontnbr = 0;
+                    firsthex=0;
+                    p++;
+                }
+                SaveSizeAddr = real_lba_pointer;                                // save where we are so that we can write the CFun size in here
+                real_lba_pointer+=4;
+                p++;
+                skipspace2(p);
+                if(!fontnbr) { //process CSub 
+                    if(!isnamestart(SDByte(p))){
+                        close_prog_file();
+                        error("Function name");
+                    }  
+                    do { p++; } while(isnamechar(SDByte(p)));
+                    skipspace2(p);
+                    if(!(isxdigit(SDByte(p)) && isxdigit(SDByte(p+1)) && isxdigit(SDByte(p+2)))) {
+                        skipelement2(p);
+                        p++;
+                        if(SDByte(p) == T_NEWLINE) {
+                            CurrentLineOffset = p;
+                            p++;                                        // skip the newline token
+                        }
+                        if(SDByte(p) == T_LINENBR) p += 3;                     // skip over a line number
+                    }
+                }
+                do {
+                    while(SDByte(p) && SDByte(p) != '\'') {
+                        skipspace2(p);
+                        n = 0;
+                        for(i = 0; i < 8; i++) {
+                            if(!isxdigit(SDByte(p))) {
+                                close_prog_file();
+                                error("Invalid hex word");
+                            }
+                            if((int)((char *)real_lba_pointer - (uint32_t)PROGSTART) >= MAX_PROG_SIZE - 5) goto exiterror;
+                            n = n << 4;
+                            if(SDByte(p) <= '9')
+                                n |= (SDByte(p) - '0');
+                            else
+                                n |= (toupper(SDByte(p)) - 'A' + 10);
+                            p++;
+                        }
+                        real_lba_pointer += 4;
+                        skipspace2(p);
+                        if(firsthex){
+                            firsthex=0;
+                            if(((n>>16) & 0xff) < 0x20){
+                                close_prog_file();
+                                error("Can't define non-printing characters");
+                            }
+                        }
+                    }
+                    // we are at the end of a embedded code line
+                    skipelement2(p);                                      // make sure that we move to the end of the line
+                    p++;                                                // step to the start of the next line
+                    if(SDByte(p) == 0) {
+                        close_prog_file();
+                        error("Missing END declaration");
+                    }
+                    if(SDByte(p) == T_NEWLINE) {
+                        CurrentLineOffset = p;
+                        p++;                                            // skip the newline token
+                    }
+                    if(SDByte(p) == T_LINENBR) p += 3;                         // skip over the line number
+                    skipspace2(p);
+                    tkn = SDByte(p) & 0x7f;
+                    tkn |= ((unsigned short)(SDByte(p+1) & 0x7f)<<7);
+                } while(tkn != endtoken);
+                storedupdates[updatecount++] = real_lba_pointer - SaveSizeAddr - 4;
+            }
+            skipelement2(p);                                              // look for the zero marking the start of the next element
         }
-        tkn=p[0] & 0x7f;
-        tkn |= ((unsigned short)(p[1] & 0x7f)<<7);
-        if(tkn == cmdCSUB || tkn == GetCommandValue((unsigned char *)"DefineFont")) {      // found a CFUNCTION, CSUB or DEFINEFONT token
-            if(tkn == GetCommandValue((unsigned char *)"DefineFont")) {
-             endtoken = GetCommandValue((unsigned char *)"End DefineFont");
-             p+=2;                                                // step over the token
-             skipspace(p);
-             if(*p == '#') p++;
-             fontnbr = getint(p, 1, FONT_TABLE_SIZE);
-                                                 // font 6 has some special characters, some of which depend on font 1
-             if(fontnbr == 1 || fontnbr == 6 || fontnbr == 7) {
-                enable_interrupts_pico();
-                error("Cannot redefine fonts 1, 6 or 7");
-             }
-             realflashpointer+=4;
-             skipelement(p);                                     // go to the end of the command
-             p--;
+        real_lba_pointer = realflashsave ;
+        updatecount=0;
+        p = lba_progmemory;                                              // start scanning program memory
+        while(SDByte(p) != 0xff) {
+            nbr++;
+            if(SDByte(p) == 0) p++;                                            // if it is at the end of an element skip the zero marker
+            if(SDByte(p) == 0) break;                                          // end of the program
+            if(SDByte(p) == T_NEWLINE) {
+                CurrentLineOffset = p;
+                p++;                                                    // skip the newline token
+            }
+            if(SDByte(p) == T_LINENBR) p += 3;                                 // step over the line number
+
+            skipspace2(p);
+            if(SDByte(p) == T_LABEL) {
+                p += SDByte(p+1) + 2;                                          // skip over the label
+                skipspace2(p);                                           // and any following spaces
+            }
+            tkn = SDByte(p) & 0x7f;
+            tkn |= ((unsigned short)(SDByte(p+1) & 0x7f)<<7);
+            if(tkn == cmdCSUB || tkn == GetCommandValue((unsigned char *)"DefineFont")) {      // found a CFUNCTION, CSUB or DEFINEFONT token
+            if(tkn == GetCommandValue((unsigned char *)"DefineFont")) {      // found a CFUNCTION, CSUB or DEFINEFONT token
+                endtoken = GetCommandValue((unsigned char *)"End DefineFont");
+                p+=2;                                                // step over the token
+                skipspace2(p);
+                if(SDByte(p) == '#') p++;
+                uint8_t buf[MAXSTRLEN + 1];
+                SDBlock(p, buf, sizeof(buf));
+                *(uint8_t*)(buf + sizeof(buf) - 1) = 0; //  guarantee it is null-terminated
+                fontnbr = getint(buf, 1, FONT_TABLE_SIZE);
+                                                    // font 6 has some special characters, some of which depend on font 1
+                if(fontnbr == 1 || fontnbr == 6 || fontnbr == 7) {
+                    close_prog_file();
+                    error("Cannot redefine fonts 1, 6, or 7");
+                }
+
+                //SDWriteWord(fontnbr - 1);                        // a low number (< FONT_TABLE_SIZE) marks the entry as a font
+                // B31 = 1 now marks entry as font.
+                SDWriteByte(fontnbr - 1);
+                SDWriteByte(0x00);  
+                SDWriteByte(0x00);
+                SDWriteByte(0x80);    
+            
+
+                skipelement2(p);                                     // go to the end of the command
+                p--;
             } else {
                 endtoken = GetCommandValue((unsigned char *)"End CSub");
-                realflashpointer+=4;
+                SDWriteWord((unsigned int)(p-lba_progmemory));               // if a CFunction/CSub save a relative pointer to the declaration
                 fontnbr = 0;
-                firsthex=0;
                 p++;
             }
-             SaveSizeAddr = realflashpointer;                                // save where we are so that we can write the CFun size in here
-             realflashpointer+=4;
-             p++;
-             skipspace(p);
-             if(!fontnbr) { //process CSub 
-                 if(!isnamestart((uint8_t)*p)){
-                    enable_interrupts_pico();
-                    error("Function name");
-                 }  
-                 do { p++; } while(isnamechar((uint8_t)*p));
-                 skipspace(p);
-                 if(!(isxdigit((uint8_t)p[0]) && isxdigit((uint8_t)p[1]) && isxdigit((uint8_t)p[2]))) {
-                     skipelement(p);
-                     p++;
-                    if(*p == T_NEWLINE) {
-                        CurrentLinePtr = p;
+                SaveSizeAddr = real_lba_pointer;                                // save where we are so that we can write the CFun size in here
+                SDWriteWord(storedupdates[updatecount++]);                        // leave this blank so that we can later do the write
+                p++;
+                skipspace2(p);
+                if(!fontnbr) {
+                    if(!isnamestart((uint8_t)SDByte(p)))  {
+                        close_prog_file();
+                        error("Function name");
+                    }
+                    do { p++; } while(isnamechar(SDByte(p)));
+                    skipspace2(p);
+                    if(!(isxdigit(SDByte(p)) && isxdigit(SDByte(p+1)) && isxdigit(SDByte(p+2)))) {
+                        skipelement2(p);
+                        p++;
+                        if(SDByte(p) == T_NEWLINE) {
+                            CurrentLineOffset = p;
+                            p++;                                        // skip the newline token
+                        }
+                        if(SDByte(p) == T_LINENBR) p += 3;                     // skip over a line number
+                    }
+                }
+                do {
+                    while(SDByte(p) && SDByte(p) != '\'') {
+                        skipspace2(p);
+                        n = 0;
+                        for(i = 0; i < 8; i++) {
+                            if(!isxdigit(SDByte(p))) {
+                                close_prog_file();
+                                error("Invalid hex word");
+                            }
+                            if((int)((char *)real_lba_pointer - (uint32_t)PROGSTART) >= MAX_PROG_SIZE - 5) goto exiterror;
+                            n = n << 4;
+                            if(SDByte(p) <= '9')
+                                n |= (SDByte(p) - '0');
+                            else
+                                n |= (toupper(SDByte(p)) - 'A' + 10);
+                            p++;
+                        }
+
+                        SDWriteWord(n);
+                        skipspace2(p);
+                    }
+                    // we are at the end of a embedded code line
+                    skipelement2(p);                                      // make sure that we move to the end of the line
+                    p++;                                                // step to the start of the next line
+                    if(SDByte(p) == 0) {
+                        close_prog_file();
+                        error("Missing END declaration");
+                    }
+                    if(SDByte(p) == T_NEWLINE) {
+                        CurrentLineOffset = p;
                         p++;                                        // skip the newline token
                     }
-                    if(*p == T_LINENBR) p += 3;                     // skip over a line number
-                 }
-             }
-             do {
-                 while(*p && *p != '\'') {
-                     skipspace(p);
-                     n = 0;
-                     for(i = 0; i < 8; i++) {
-                         if(!isxdigit((uint8_t)*p)) {
-                            enable_interrupts_pico();
-                            error("Invalid hex word");
-                         }
-                         if((int)((char *)realflashpointer - (uint32_t)PROGSTART) >= MAX_PROG_SIZE - 5) goto exiterror;
-                         n = n << 4;
-                         if(*p <= '9')
-                             n |= (*p - '0');
-                         else
-                             n |= (toupper(*p) - 'A' + 10);
-                         p++;
-                     }
-                     realflashpointer+=4;
-                     skipspace(p);
-                     if(firsthex){
-                    	 firsthex=0;
-                    	 if(((n>>16) & 0xff) < 0x20){
-                            enable_interrupts_pico();
-                            error("Can't define non-printing characters");
-                         }
-                     }
-                 }
-                 // we are at the end of a embedded code line
-                 while(*p) p++;                                      // make sure that we move to the end of the line
-                 p++;                                                // step to the start of the next line
-                 if(*p == 0) {
-                     enable_interrupts_pico();
-                     error("Missing END declaration");
-                 }
-                 if(*p == T_NEWLINE) {
-                     CurrentLinePtr = p;
-                     p++;                                            // skip the newline token
-                 }
-                 if(*p == T_LINENBR) p += 3;                         // skip over the line number
-                 skipspace(p);
-                tkn=p[0] & 0x7f;
-                tkn |= ((unsigned short)(p[1] & 0x7f)<<7);
-             } while(tkn != endtoken);
-             storedupdates[updatecount++]=realflashpointer - SaveSizeAddr - 4;
-         }
-         while(*p) p++;                                              // look for the zero marking the start of the next element
-     }
-    realflashpointer = realflashsave ;
-    updatecount=0;
-    p = (unsigned char *)flash_progmemory;                                              // start scanning program memory
-    while(*p != 0xff) {
-     	nbr++;
-         if(*p == 0) p++;                                            // if it is at the end of an element skip the zero marker
-         if(*p == 0) break;                                          // end of the program
-         if(*p == T_NEWLINE) {
-             CurrentLinePtr = p;
-             p++;                                                    // skip the newline token
-         }
-         if(*p == T_LINENBR) p += 3;                                 // step over the line number
-
-         skipspace(p);
-         if(*p == T_LABEL) {
-             p += p[1] + 2;                                          // skip over the label
-             skipspace(p);                                           // and any following spaces
-         }
-         tkn=p[0] & 0x7f;
-         tkn |= ((unsigned short)(p[1] & 0x7f)<<7);
-         if(tkn == cmdCSUB || tkn == GetCommandValue((unsigned char *)"DefineFont")) {      // found a CFUNCTION, CSUB or DEFINEFONT token
-         if(tkn == GetCommandValue((unsigned char *)"DefineFont")) {      // found a CFUNCTION, CSUB or DEFINEFONT token
-             endtoken = GetCommandValue((unsigned char *)"End DefineFont");
-             p+=2;                                                // step over the token
-             skipspace(p);
-             if(*p == '#') p++;
-             fontnbr = getint(p, 1, FONT_TABLE_SIZE);
-                                                 // font 6 has some special characters, some of which depend on font 1
-             if(fontnbr == 1 || fontnbr == 6 || fontnbr == 7) {
-                 enable_interrupts_pico();
-                 error("Cannot redefine fonts 1, 6, or 7");
-             }
-
-             //FlashWriteWord(fontnbr - 1);                        // a low number (< FONT_TABLE_SIZE) marks the entry as a font
-             // B31 = 1 now marks entry as font.
-             FlashWriteByte(fontnbr - 1);
-             FlashWriteByte(0x00);  
-             FlashWriteByte(0x00);
-             FlashWriteByte(0x80);    
-           
-
-             skipelement(p);                                     // go to the end of the command
-             p--;
-         } else {
-             endtoken = GetCommandValue((unsigned char *)"End CSub");
-             FlashWriteWord((unsigned int)(p-flash_progmemory));               // if a CFunction/CSub save a relative pointer to the declaration
-             fontnbr = 0;
-             p++;
-         }
-            SaveSizeAddr = realflashpointer;                                // save where we are so that we can write the CFun size in here
-             FlashWriteWord(storedupdates[updatecount++]);                        // leave this blank so that we can later do the write
-             p++;
-             skipspace(p);
-             if(!fontnbr) {
-                 if(!isnamestart((uint8_t)*p))  {
-                     enable_interrupts_pico();
-                     error("Function name");
-                 }
-                 do { p++; } while(isnamechar(*p));
-                 skipspace(p);
-                 if(!(isxdigit(p[0]) && isxdigit(p[1]) && isxdigit(p[2]))) {
-                     skipelement(p);
-                     p++;
-                    if(*p == T_NEWLINE) {
-                        CurrentLinePtr = p;
-                        p++;                                        // skip the newline token
-                    }
-                    if(*p == T_LINENBR) p += 3;                     // skip over a line number
-                 }
-             }
-             do {
-                 while(*p && *p != '\'') {
-                     skipspace(p);
-                     n = 0;
-                     for(i = 0; i < 8; i++) {
-                         if(!isxdigit(*p)) {
-                            enable_interrupts_pico();
-                            error("Invalid hex word");
-                         }
-                         if((int)((char *)realflashpointer - (uint32_t)PROGSTART) >= MAX_PROG_SIZE - 5) goto exiterror;
-                         n = n << 4;
-                         if(*p <= '9')
-                             n |= (*p - '0');
-                         else
-                             n |= (toupper(*p) - 'A' + 10);
-                         p++;
-                     }
-
-                     FlashWriteWord(n);
-                     skipspace(p);
-                 }
-                 // we are at the end of a embedded code line
-                 while(*p) p++;                                      // make sure that we move to the end of the line
-                 p++;                                                // step to the start of the next line
-                 if(*p == 0) {
-                    enable_interrupts_pico();
-                    error("Missing END declaration");
-                 }
-                 if(*p == T_NEWLINE) {
-                    CurrentLinePtr = p;
-                    p++;                                        // skip the newline token
-                 }
-                 if(*p == T_LINENBR) p += 3;                     // skip over a line number
-                 skipspace(p);
-                tkn=p[0] & 0x7f;
-                tkn |= ((unsigned short)(p[1] & 0x7f)<<7);
-              } while(tkn != endtoken);
-         }
-         while(*p) p++;                                              // look for the zero marking the start of the next element
-     }
-    FlashWriteWord(0xffffffff);                                // make sure that the end of the CFunctions is terminated with an erased word
-    FlashWriteClose();                                              // this will flush the buffer and step the flash write pointer to the next word boundary
+                    if(SDByte(p) == T_LINENBR) p += 3;                     // skip over a line number
+                    skipspace2(p);
+                    tkn = SDByte(p) & 0x7f;
+                    tkn |= ((unsigned short)(SDByte(p+1) & 0x7f)<<7);
+                } while(tkn != endtoken);
+            }
+            skipelement2(p);                                              // look for the zero marking the start of the next element
+        }
+    }
+    SDWriteWord(0xffffffff);                                // make sure that the end of the CFunctions is terminated with an erased word
+    SDWriteClose();                                              // this will flush the buffer and step the flash write pointer to the next word boundary
     if(msg) {                                                       // if requested by the caller, print an informative message
         if(MMCharPos > 1) MMPrintString("\r\n");                    // message should be on a new line
         MMPrintString("Saved ");
@@ -4964,17 +4977,15 @@ contloop:
 #ifdef USBKEYBOARD
 	clearrepeat();
 #endif
-/// TODO: ensure
-    enable_interrupts_pico();
+    close_prog_file();
     return;
 
     // we only get here in an error situation while writing the program to flash
-    exiterror:
-        FlashWriteByte(0); FlashWriteByte(0); FlashWriteByte(0);    // terminate the program in flash
-        FlashWriteClose();
-        error("Not enough memory");
+exiterror:
+    SDWriteByte(0); SDWriteByte(0); SDWriteByte(0);    // terminate the program in flash
+    SDWriteClose();
+    error("Not enough memory");
 }
- 
 
 #ifdef __cplusplus
 }

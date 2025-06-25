@@ -68,7 +68,7 @@ extern unsigned char g_DimUsed;
 
 //extern unsigned char *GetFileName(char* CmdLinePtr, unsigned char *LastFilePtr);
 //extern void mergefile(unsigned char *fname, unsigned char *MemPtr);
-extern void ListProgram(unsigned char *p, int all);
+extern void ListProgram(FSIZE_t p, int all);
 extern unsigned char *llist(unsigned char *b, unsigned char *p);
 extern unsigned char *CheckIfTypeSpecified(unsigned char *p, int *type, int AllowDefaultType);
 

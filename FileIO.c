@@ -56,10 +56,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #ifdef rp2350
 #include "hardware/structs/qmi.h"
 #endif
-extern const uint8_t *flash_target_contents;
-extern const uint8_t *flash_progmemory;
-//LIBRARY
-extern const uint8_t *flash_libgmemory;
+extern const FSIZE_t lba_target_contents;
+extern const FSIZE_t lba_progmemory;
 extern void routinechecks(void);
 extern bool mergedread;
 extern int TraceOn;
@@ -126,7 +124,7 @@ volatile union u_flash
     uint32_t i32[64];
 } MemWord;
 volatile int mi8p = 0;
-volatile uint32_t realflashpointer;
+volatile FSIZE_t real_lba_pointer;
 int FlashLoad = 0;
 unsigned char *CFunctionFlash = NULL;
 unsigned char *CFunctionLibrary = NULL;
@@ -280,8 +278,7 @@ union uFileTable FileTable[MAXOPENFILES + 1];
 volatile BYTE SDCardStat = STA_NOINIT | STA_NODISK;
 int OptionFileErrorAbort = true;
 volatile uint32_t irqs;
-static bool irqs_disabled = false;
-#ifdef rp2350
+#if 0
 static void save_psram_settings(void) {
     // We're about to invalidate the XIP cache, clean it first to commit any dirty writes to PSRAM
     uint8_t *maintenance_ptr = (uint8_t *)XIP_MAINTENANCE_BASE;
@@ -303,26 +300,6 @@ static void restore_psram_settings(void) {
 }
 #endif
 
-void disable_interrupts_pico(void)
-{
-#ifdef rp2350
-    save_psram_settings();
-#endif
-    irqs = save_and_disable_interrupts();
-    irqs_disabled = true;
-}
-void enable_interrupts_pico(void)
-{
-    if (!irqs_disabled) return;
-    irqs_disabled = false;
-#ifdef rp2350
-    restore_psram_settings();
-#endif
-    restore_interrupts(irqs);
-    SecondsTimer+=(time_us_64()/1000 - mSecTimer);
-    mSecTimer=time_us_64()/1000;
-    irqs=0;
-}
 void ErrorThrow(int e, int type)
 {
     FatFSFileSystem = FatFSFileSystemSave;
@@ -379,18 +356,18 @@ int __not_in_flash_func(fs_flash_prog)(const struct lfs_config *cfg, lfs_block_t
     assert(block < cfg->block_count);
 
     uint32_t addr = RoundUpK4(TOP_OF_SYSTEM_FLASH) + (Option.modbuff ? 1024*Option.modbuffsize : 0) + block*4096 + off;
-    disable_interrupts_pico();
-    flash_range_program(addr, buffer, size);
-    enable_interrupts_pico();
+    open_prog_file();
+    SDWriteProg(addr, buffer, size);
+    close_prog_file();
     return 0;
 }
 int __not_in_flash_func(fs_flash_erase)(const struct lfs_config *cfg, lfs_block_t block){
     assert(block < cfg->block_count);
 
     uint32_t block_addr = RoundUpK4(TOP_OF_SYSTEM_FLASH) + (Option.modbuff ? 1024*Option.modbuffsize : 0) + block*4096;
-        disable_interrupts_pico();
-        flash_range_erase(block_addr, BLOCK_SIZE);
-        enable_interrupts_pico();
+        open_prog_file();
+        SDEraseBlock(block_addr, BLOCK_SIZE);
+        close_prog_file();
         return 0;
 }
 int __not_in_flash_func(fs_flash_sync)(const struct lfs_config *c)
@@ -420,7 +397,7 @@ extern unsigned int mmap[HEAP_MEMORY_SIZE/ PAGESIZE / PAGESPERWORD];
 extern unsigned int psmap[7*1024*1024/ PAGESIZE / PAGESPERWORD];
 void MIPS16 cmd_psram(void)
 {
-    if(!PSRAMsize)error("PSRAM not enabled");
+    if(!PSRAMsize) error("PSRAM not enabled");
     unsigned char *p;
     if ((p = checkstring(cmdline, (unsigned char *)"ERASE ALL")))
     {
@@ -431,17 +408,21 @@ void MIPS16 cmd_psram(void)
         int i = getint(p, 1, MAXRAMSLOTS);
         uint8_t *j = (uint8_t *)PSRAMblock + ((i - 1) * MAX_PROG_SIZE);
         memset(j,0,MAX_PROG_SIZE);
-     }
+    }
     else if ((p = checkstring(cmdline, (unsigned char *)"OVERWRITE")))
     {
         int i = getint(p, 1, MAXRAMSLOTS);
         uint8_t *j = (uint8_t *)PSRAMblock + ((i - 1) * MAX_PROG_SIZE);
         memset(j,0,MAX_PROG_SIZE);
-        uint8_t *q = ProgMemory;
-        memcpy(j,q,MAX_PROG_SIZE);
+        open_prog_file();
+        SDBlock(ProgMemory, j, MAX_PROG_SIZE);
+        close_prog_file();
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"LIST")))
     {
+        error("PSRAM LIST is not yet implemented in this version");
+        /// TODO:
+        #if 0
         int j, i, k;
         int *pp;
         getargs(&p, 3, (unsigned char *)",");
@@ -458,7 +439,7 @@ void MIPS16 cmd_psram(void)
             }
             else
                 error("Syntax");
-            ProgMemory = (unsigned char *)flash_progmemory;
+            ProgMemory = (unsigned char *)lba_progmemory;
         }
         else
         {
@@ -498,6 +479,7 @@ void MIPS16 cmd_psram(void)
                 }
             }
         }
+        #endif
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"FILE LOAD")))
     {
@@ -523,71 +505,76 @@ void MIPS16 cmd_psram(void)
         uint8_t *c = (uint8_t *)(PSRAMblock + ((i - 1) * MAX_PROG_SIZE));
         if (*c != 0x0)
             error("Already programmed");
-        uint8_t *q = ProgMemory;
-        memcpy(c,q,MAX_PROG_SIZE);
+        open_prog_file();
+        SDBlock(ProgMemory, c, MAX_PROG_SIZE);
+        close_prog_file();
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"LOAD")))
     {
-        if (CurrentLinePtr)
+        if (CurrentLineOffset)
             error("Invalid in program");
         int j = (Option.PROG_FLASH_SIZE >> 2), i = getint(p, 1, MAXRAMSLOTS);
-        disable_interrupts_pico();
-        flash_range_erase(PROGSTART, MAX_PROG_SIZE);
-        enable_interrupts_pico();
+        open_prog_file();
+        SDEraseBlock(PROGSTART, MAX_PROG_SIZE);
+        close_prog_file();
         j = (MAX_PROG_SIZE >> 2);
-        uSec(250000);
-        int *pp = (int *)flash_progmemory;
+        int *pp = (int *)lba_progmemory;
         while (j--)
             if (*pp++ != 0xFFFFFFFF)
             {
                 error("Erase error");
             }
-        disable_interrupts_pico();
         uint8_t *q = (uint8_t *)(PSRAMblock + ((i - 1) * MAX_PROG_SIZE));
         uint8_t *writebuff = GetTempMemory(4096);
         if (*q == 0xFF)
         {
-            enable_interrupts_pico();
-            FlashWriteInit(PROGRAM_FLASH);
-            flash_range_erase(realflashpointer, MAX_PROG_SIZE);
-            FlashWriteByte(0);
-            FlashWriteByte(0);
-            FlashWriteByte(0); // terminate the program in flash
-            FlashWriteClose();
+            SDWriteInit(PROGRAM_FLASH);
+            SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
+            SDWriteByte(0);
+            SDWriteByte(0);
+            SDWriteByte(0); // terminate the program in flash
+            SDWriteClose();
             error("Flash slot empty");
         }
+        open_prog_file();
         for (int k = 0; k < MAX_PROG_SIZE; k += 4096)
         {
             for (int j = 0; j < 4096; j++)
                 writebuff[j] = *q++;
-            flash_range_program((PROGSTART + k), writebuff, 4096);
+            SDWriteProg((PROGSTART + k), writebuff, 4096);
         }
-        enable_interrupts_pico();
+        close_prog_file();
         FlashLoad = 0;
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"CHAIN")))
     {
-        if (!CurrentLinePtr)
+        error("PSRAM CHAIN is not yet implemented in this version");
+        /// TODO:
+        #if 0
+        if (!CurrentLineOffset)
             error("Invalid at command prompt");
         int i = getint(p, 0, MAXRAMSLOTS);
         if(i) ProgMemory = (unsigned char *)(PSRAMblock + ((i - 1) * MAX_PROG_SIZE));
-        else ProgMemory = (unsigned char *)(flash_target_contents + MAXFLASHSLOTS * MAX_PROG_SIZE);
+        else ProgMemory = (unsigned char *)(lba_target_contents + MAXFLASHSLOTS * MAX_PROG_SIZE);
         FlashLoad = i;
         PrepareProgram(true);
         nextstmt = (unsigned char *)ProgMemory;
+        #endif
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"RUN")))
     {
+        error("PSRAM RUN is not yet implemented in this version");
+        /// TODO:
+        #if 0
         int i = getint(p, 0, MAXRAMSLOTS);
         if(i) ProgMemory = (unsigned char *)(uint8_t *)PSRAMblock + ((i - 1) * MAX_PROG_SIZE);
-        else ProgMemory = (unsigned char *)(flash_target_contents + MAXFLASHSLOTS * MAX_PROG_SIZE);
+        else ProgMemory = (unsigned char *)(lba_target_contents + MAXFLASHSLOTS * MAX_PROG_SIZE);
         ClearRuntime(true);
         FlashLoad = i;
         PrepareProgram(true);
-        // Create a global constant MM.CMDLINE$ containing the empty string.
-//        (void) findvar((unsigned char *)"MM.CMDLINE$", V_FIND | V_DIM_VAR | T_CONST);
         if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE) ExecuteProgram(LibMemory);  // run anything that might be in the library
         nextstmt = (unsigned char *)ProgMemory;
+        #endif
     }
     else
         error("Syntax");
@@ -598,73 +585,57 @@ void MIPS16 cmd_flash(void)
     unsigned char *p;
     if ((p = checkstring(cmdline, (unsigned char *)"ERASE ALL")))
     {
-        if (CurrentLinePtr)
+        if (CurrentLineOffset)
             error("Invalid in program");
-//        uint32_t j = FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE;
         int k=MAXFLASHSLOTS;
         if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE )
            k--;
-        uSec(250000);
-        disable_interrupts_pico();
+        open_prog_file();
         for (int i = 0; i < k; i++)
         {
-            uint32_t j = FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE + (i * MAX_PROG_SIZE);
-            flash_range_erase(j, MAX_PROG_SIZE);
+            uint32_t j = i * MAX_PROG_SIZE;
+            SDEraseBlock(j, MAX_PROG_SIZE);
         }
-        enable_interrupts_pico();
+        close_prog_file();
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"ERASE")))
     {
-        if (CurrentLinePtr)
+        if (CurrentLineOffset)
             error("Invalid in program");
         int i = getint(p, 1, MAXFLASHSLOTS);
         if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && i==MAXFLASHSLOTS) error("Library is using Slot % ",MAXFLASHSLOTS);
-        uint32_t j = FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE + ((i - 1) * MAX_PROG_SIZE);
-        uSec(250000);
-        disable_interrupts_pico();
-        flash_range_erase(j, MAX_PROG_SIZE);
-        enable_interrupts_pico();
+        uint32_t j = (i - 1) * MAX_PROG_SIZE;
+        open_prog_file();
+        SDEraseBlock(j, MAX_PROG_SIZE);
+        close_prog_file();
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"OVERWRITE")))
     {
-        if (CurrentLinePtr)
+        if (CurrentLineOffset)
             error("Invalid in program");
         int i = getint(p, 1, MAXFLASHSLOTS);
         if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && i==MAXFLASHSLOTS) error("Library is using Slot % ",MAXFLASHSLOTS);
-        uint32_t j = FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE + ((i - 1) * MAX_PROG_SIZE);
-        uSec(250000);
-        disable_interrupts_pico();
-        flash_range_erase(j, MAX_PROG_SIZE);
-        enable_interrupts_pico();
-        j = (MAX_PROG_SIZE >> 2);
-        uSec(250000);
-        int *pp = (int *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
-        while (j--)
-            if (*pp++ != 0xFFFFFFFF)
-            {
-                error("Erase error");
-            }
-        disable_interrupts_pico();
-        uint8_t *q = ProgMemory;
+        uint32_t j = (i - 1) * MAX_PROG_SIZE;
+        open_prog_file();
+        SDEraseBlock(j, MAX_PROG_SIZE);
+        FSIZE_t q = ProgMemory;
         uint8_t *writebuff = GetTempMemory(4096);
         for (int k = 0; k < MAX_PROG_SIZE; k += 4096)
         {
-            for (int j = 0; j < 4096; j++)
-                writebuff[j] = *q++;
-            flash_range_program(FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE + ((i - 1) * MAX_PROG_SIZE + k), writebuff, 4096);
+            SDBlock(q, writebuff, 4096);
+            SDWriteProg((i - 1) * MAX_PROG_SIZE + k, writebuff, 4096);
         }
-        enable_interrupts_pico();
+        close_prog_file();
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"LIST")))
     {
         int j, i, k;
-        int *pp;
         getargs(&p, 3, (unsigned char *)",");
         if (argc)
         {
             int i = getint(argv[0], 1, MAXFLASHSLOTS);
             if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && i==MAXFLASHSLOTS) error("Library is using Slot % ",MAXFLASHSLOTS);
-            ProgMemory = (unsigned char *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
+            ProgMemory = lba_target_contents + (i - 1) * MAX_PROG_SIZE;
         	if(Option.DISPLAY_CONSOLE && (SPIREAD  || Option.NoScroll)){ClearScreen(gui_bcolour);CurrentX=0;CurrentY=0;}
             if (argc == 1)
                 ListProgram(ProgMemory, false);
@@ -674,32 +645,43 @@ void MIPS16 cmd_flash(void)
             }
             else
                 error("Syntax");
-            ProgMemory = (unsigned char *)flash_progmemory;
+            ProgMemory = lba_progmemory;
         }
         else
         {
             int n=MAXFLASHSLOTS;
             if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE )
                 n--;
+            open_prog_file();
             for (i = 1; i <= n; i++)
             {
                 k = 0;
                 j = MAX_PROG_SIZE >> 2;
-                pp = (int *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
-                while (j--)
-                    if (*pp++ != 0xFFFFFFFF)
+                FSIZE_t pp = lba_target_contents + (i - 1) * MAX_PROG_SIZE;
+                while (j--) {
+                    if (SDInt(pp) != 0xFFFFFFFF)
                     {
+                        pp += 4;
                         char buff[STRINGSIZE] = {0};
                         MMPrintString(" Slot ");
                         PInt(i);
                         MMPrintString(" in use");
-                        pp--;
-                        if ((unsigned char)*pp == T_NEWLINE)
+                        pp -= 4;
+                        if (SDByte(pp) == T_NEWLINE)
                         {
-                            char *p=(char *)pp;
+                            FSIZE_t p = pp;
+                            uint8_t b2[STRINGSIZE];
+                            SDBlock(p, b2, STRINGSIZE);
+                            b2[STRINGSIZE-1] = 0;
+                            uint8_t* b3;
                             MMPrintString(": \"");
                             buff[0]='\'';buff[1]='#';
-                            while(buff[0]=='\'' && buff[1]=='#')p=(char *)llist((unsigned char *)buff, (unsigned char *)p);
+                            while(buff[0]=='\'' && buff[1]=='#') {
+                                b3 = llist((unsigned char *)buff, (unsigned char *)b2);
+                                p = b3 - b2;
+                                SDBlock(p, b2, STRINGSIZE);
+                                b2[STRINGSIZE-1] = 0;
+                            }
                             MMPrintString(buff);
                             MMPrintString("\"\r\n");
                         }
@@ -707,7 +689,10 @@ void MIPS16 cmd_flash(void)
                             MMPrintString("\r\n");
                         k = 1;
                         break;
+                    } else {
+                        pp += 4;
                     }
+                }
                 if (k == 0)
                 {
                     MMPrintString(" Slot ");
@@ -715,6 +700,7 @@ void MIPS16 cmd_flash(void)
                     MMPrintString(" available\r\n");
                 }
             }
+            close_prog_file();
             if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE ){
                     MMPrintString(" Slot ");
                     PInt(MAXFLASHSLOTS);
@@ -736,23 +722,23 @@ void MIPS16 cmd_flash(void)
 		if(RoundUpK4(fsize)>1024*Option.modbuffsize)error("File too large for modbuffer");
         char *r = GetTempMemory(256);
         uint32_t j = RoundUpK4(TOP_OF_SYSTEM_FLASH);
-        disable_interrupts_pico();
-        flash_range_erase(j, RoundUpK4(fsize));
-        enable_interrupts_pico();
+        open_prog_file();
+        SDEraseBlock(j, RoundUpK4(fsize));
+        close_prog_file();
         while(!FileEOF(fnbr)) { 
             memset(r,0,256) ;
             for(int i=0;i<256;i++) {
                 if(FileEOF(fnbr))break;
                 r[i] = FileGetChar(fnbr);
             }  
-            disable_interrupts_pico();
-            flash_range_program(j, (uint8_t *)r, 256);
-            enable_interrupts_pico();
+            open_prog_file();
+            SDWriteProg(j, (uint8_t *)r, 256);
+            close_prog_file();
             routinechecks();
             j+=256;
         }
         FileClose(fnbr);
-        FlashWriteClose();
+        SDWriteClose();
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"DISK LOAD")))
     {
@@ -765,7 +751,7 @@ void MIPS16 cmd_flash(void)
             else error("Syntax");
         }
         if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && i==MAXFLASHSLOTS) error("Library is using Slot % ",MAXFLASHSLOTS);
-        uint32_t *c = (uint32_t *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
+        uint32_t *c = (uint32_t *)(lba_target_contents + (i - 1) * MAX_PROG_SIZE);
         if (*c != 0xFFFFFFFF && overwrite==0) error("Already programmed");
         int fnbr = FindFreeFileNbr();
         if (!InitSDCard())  return;
@@ -774,119 +760,119 @@ void MIPS16 cmd_flash(void)
 		if(filesource[fnbr]!=FLASHFILE)  fsize = f_size(FileTable[fnbr].fptr);
 		else fsize = lfs_file_size(&lfs,FileTable[fnbr].lfsptr);
         if(fsize>MAX_PROG_SIZE)error("File size % cannot exceed %",fsize,MAX_PROG_SIZE);
-        FlashWriteInit(i);
-        flash_range_erase(realflashpointer, MAX_PROG_SIZE);
+        SDWriteInit(i);
+        SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
         int j=MAX_PROG_SIZE/4;
-        int *ppp=(int *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
+        int *ppp=(int *)(lba_target_contents + (i - 1) * MAX_PROG_SIZE);
         while(j--)if(*ppp++ != 0xFFFFFFFF){
-            enable_interrupts_pico();
+            close_prog_file();
             error("Flash erase problem");
         }
         for(int k = 0; k < fsize; k++){        // write to the flash byte by byte
-           FlashWriteByte(FileGetChar(fnbr));
+           SDWriteByte(FileGetChar(fnbr));
         }
         FileClose(fnbr);
-        FlashWriteClose();
+        SDWriteClose();
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"SAVE")))
     {
-        if (CurrentLinePtr)
+        if (CurrentLineOffset)
             error("Invalid in program");
         int i = getint(p, 1, MAXFLASHSLOTS);
         if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && i==MAXFLASHSLOTS) error("Library is using Slot % ",MAXFLASHSLOTS);
-        uint32_t *c = (uint32_t *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
+        uint32_t *c = (uint32_t *)(lba_target_contents + (i - 1) * MAX_PROG_SIZE);
         if (*c != 0xFFFFFFFF)
             error("Already programmed");
         ;
-        uint32_t j = FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE + ((i - 1) * MAX_PROG_SIZE);
+        uint32_t j = (i - 1) * MAX_PROG_SIZE;
         uSec(250000);
-        disable_interrupts_pico();
-        flash_range_erase(j, MAX_PROG_SIZE);
-        enable_interrupts_pico();
+        open_prog_file();
+        SDEraseBlock(j, MAX_PROG_SIZE);
+        close_prog_file();
         j = (MAX_PROG_SIZE >> 2);
         uSec(250000);
-        int *pp = (int *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
+        int *pp = (int *)(lba_target_contents + (i - 1) * MAX_PROG_SIZE);
         while (j--)
             if (*pp++ != 0xFFFFFFFF)
             {
                 error("Erase error");
             }
-        disable_interrupts_pico();
+        open_prog_file();
         uint8_t *q = (uint8_t *)ProgMemory;
         uint8_t *writebuff = (uint8_t *)GetTempMemory(4096);
         for (int k = 0; k < MAX_PROG_SIZE; k += 4096)
         {
             for (int j = 0; j < 4096; j++)
                 writebuff[j] = *q++;
-            flash_range_program(FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE + ((i - 1) * MAX_PROG_SIZE + k), (uint8_t *)writebuff, 4096);
+            SDWriteProg((i - 1) * MAX_PROG_SIZE + k, (uint8_t *)writebuff, 4096);
         }
-        enable_interrupts_pico();
+        close_prog_file();
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"LOAD")))
     {
-        if (CurrentLinePtr)
+        if (CurrentLineOffset)
             error("Invalid in program");
         int j = (Option.PROG_FLASH_SIZE >> 2), i = getint(p, 1, MAXFLASHSLOTS);
         if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && i==MAXFLASHSLOTS) error("Library is using Slot % ",MAXFLASHSLOTS);
-        disable_interrupts_pico();
-        flash_range_erase(PROGSTART, MAX_PROG_SIZE);
-        enable_interrupts_pico();
+        open_prog_file();
+        SDEraseBlock(PROGSTART, MAX_PROG_SIZE);
+        close_prog_file();
         j = (MAX_PROG_SIZE >> 2);
         uSec(250000);
-        int *pp = (int *)flash_progmemory;
+        int *pp = (int *)lba_progmemory;
         while (j--)
             if (*pp++ != 0xFFFFFFFF)
             {
                 error("Erase error");
             }
-        disable_interrupts_pico();
-        uint8_t *q = (uint8_t *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
+        open_prog_file();
+        uint8_t *q = (uint8_t *)(lba_target_contents + (i - 1) * MAX_PROG_SIZE);
         uint8_t *writebuff = GetTempMemory(4096);
         if (*q == 0xFF)
         {
-            enable_interrupts_pico();
-            FlashWriteInit(PROGRAM_FLASH);
-            flash_range_erase(realflashpointer, MAX_PROG_SIZE);
-            FlashWriteByte(0);
-            FlashWriteByte(0);
-            FlashWriteByte(0); // terminate the program in flash
-            FlashWriteClose();
+            close_prog_file();
+            SDWriteInit(PROGRAM_FLASH);
+            SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
+            SDWriteByte(0);
+            SDWriteByte(0);
+            SDWriteByte(0); // terminate the program in flash
+            SDWriteClose();
             error("Flash slot empty");
         }
         for (int k = 0; k < MAX_PROG_SIZE; k += 4096)
         {
             for (int j = 0; j < 4096; j++)
                 writebuff[j] = *q++;
-            flash_range_program((PROGSTART + k), writebuff, 4096);
+            SDWriteProg((PROGSTART + k), writebuff, 4096);
         }
-        enable_interrupts_pico();
+        close_prog_file();
         FlashLoad = 0;
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"CHAIN")))
     {
-        if (!CurrentLinePtr)
+        if (!CurrentLineOffset)
             error("Invalid at command prompt");
         int i = getint(p, 0, MAXFLASHSLOTS);
         if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && i==MAXFLASHSLOTS) error("Library is using Slot % ",MAXFLASHSLOTS);
-        if(i) ProgMemory = (unsigned char *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
-        else ProgMemory = (unsigned char *)(flash_target_contents + MAXFLASHSLOTS * MAX_PROG_SIZE);
+        if(i) ProgMemory = (lba_target_contents + (i - 1) * MAX_PROG_SIZE);
+        else ProgMemory = (lba_target_contents + MAXFLASHSLOTS * MAX_PROG_SIZE);
         FlashLoad = i;
         PrepareProgram(true);
-        nextstmt = (unsigned char *)ProgMemory;
+        nextstmt = ProgMemory;
     }
     else if ((p = checkstring(cmdline, (unsigned char *)"RUN")))
     {
         int i = getint(p, 0, MAXFLASHSLOTS);
          if(Option.LIBRARY_FLASH_SIZE==MAX_PROG_SIZE && i==MAXFLASHSLOTS) error("Library is using Slot % ",MAXFLASHSLOTS);
-        if(i) ProgMemory = (unsigned char *)(flash_target_contents + (i - 1) * MAX_PROG_SIZE);
-        else ProgMemory = (unsigned char *)(flash_target_contents + MAXFLASHSLOTS * MAX_PROG_SIZE);
+        if(i) ProgMemory = (lba_target_contents + (i - 1) * MAX_PROG_SIZE);
+        else ProgMemory = (lba_target_contents + MAXFLASHSLOTS * MAX_PROG_SIZE);
         ClearRuntime(true);
         FlashLoad = i;
         PrepareProgram(true);
         // Create a global constant MM.CMDLINE$ containing the empty string.
 //        (void) findvar((unsigned char *)"MM.CMDLINE$", V_FIND | V_DIM_VAR | T_CONST);
-        if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE) ExecuteProgram(LibMemory);  // run anything that might be in the library
-        nextstmt = (unsigned char *)ProgMemory;
+        if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE) ExecuteProgramSD(LibMemory);  // run anything that might be in the library
+        nextstmt = ProgMemory;
     }
     else
         error("Syntax");
@@ -1460,7 +1446,7 @@ void MIPS16 cmd_kill(void)
         }
         if (pp[0] == 0)
             strcpy(pp, "*");
-        if (CurrentLinePtr)
+        if (CurrentLineOffset)
             error("Invalid in a program");
         FatFSFileSystem=t-1;
         if (!InitSDCard())
@@ -2052,26 +2038,56 @@ void MIPS16 cmd_save(void)
     }
     else
     {
-        unsigned char b[STRINGSIZE];
         p = getFstring(cmdline); // get the file name and change to the directory
         if (strchr((char *)p, '.') == NULL)
             strcat((char *)p, ".bas");
         if (!BasicFileOpen((char *)p, fnbr, FA_WRITE | FA_CREATE_ALWAYS))
             return;
-        p = ProgMemory;
-        int lineno=0;
-        while (!(*p == 0 || *p == 0xff))
-        {                    // this is a safety precaution
-            p = llist(b, p); // expand the line
-            pp = b;
-            if(!(b[0]=='\'' && b[1]=='#' && lineno==0)){
-                lineno++;
-                while (*pp) FilePutChar(*pp++, fnbr); // write the line to the SD card
-                FilePutChar('\r', fnbr);
-                FilePutChar('\n', fnbr); // terminate the line
-                if (p[0] == 0 && p[1] == 0) break; // end of the listing ?
+
+        #define BLOCKSIZE  STRINGSIZE * 2   // буфер побольше, чтобы строки не рвались на границе
+        uint8_t progblock[BLOCKSIZE + 1];   // +1 на случай недостраховки
+        FSIZE_t progptr = ProgMemory;
+        FSIZE_t progoffs = 0;
+        int progavail = 0;
+
+        int lineno = 0;
+        open_prog_file();
+        while (1) {
+            // если в буфере осталось мало данных — подгружаем новый блок
+            if (progavail < STRINGSIZE && progptr < MAX_PROG_SIZE + lba_progmemory) {
+                int move = progavail;
+                memmove(progblock, progblock + progoffs, move);
+                UINT br = SDBlock(progptr, progblock + move, BLOCKSIZE - move);
+                progptr += br;
+                progoffs = 0;
+                progavail = move + br;
+                progblock[progavail] = 0; // на всякий случай
             }
+
+            if (progavail <= 0 || progblock[progoffs] == 0xff)
+                break;
+
+            // llist требует указатель на память — мы передаём указатель внутрь буфера
+            unsigned char *pbuf = progblock + progoffs;
+            unsigned char b[STRINGSIZE];
+            unsigned char *next = llist(b, pbuf);
+
+            if (!(b[0] == '\'' && b[1] == '#' && lineno == 0)) {
+                lineno++;
+                unsigned char *pp = b;
+                while (*pp) FilePutChar(*pp++, fnbr);
+                FilePutChar('\r', fnbr);
+                FilePutChar('\n', fnbr);
+            }
+
+            // вычисляем, сколько байт llist() съел
+            progoffs = next - progblock;
+
+            // конец программы?
+            if (progblock[progoffs] == 0 && progblock[progoffs + 1] == 0)
+                break;
         }
+        close_prog_file();
         FileClose(fnbr);
     }
 }
@@ -2425,7 +2441,7 @@ int FileLoadCMM2Program(char *fname, bool message) {
     *p = 0;                                                         // terminate the string in RAM
     FileClose(fnbr);
     unsigned char continuation=Option.continuation;
-    SaveProgramToFlash((unsigned char *)buf, false);
+    SaveProgramToSD((unsigned char *)buf, false);
     Option.continuation= continuation;   
     FreeMemorySafe((void **)&buf);
     FreeMemorySafe((void **)&dlist);
@@ -2485,7 +2501,7 @@ int FileLoadProgram(unsigned char *fname, bool chain)
     *p = 0; // terminate the string in RAM
     FileClose(fnbr);
     ClearSavedVars(); // clear any saved variables
-    SaveProgramToFlash((unsigned char *)buf, false);
+    SaveProgramToSD((unsigned char *)buf, false);
     return true;
 }
 #ifdef rp2350
@@ -2588,7 +2604,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram) {
         if(*p == 0) p++;                                            // if it is at the end of an element skip the zero marker
         if(*p == 0) break;                                          // end of the program
         if(*p == T_NEWLINE) {
-            CurrentLinePtr = p;
+            CurrentLineOffset = (FSIZE_t)p;
             p++;                                                    // skip the newline token
         }
         if(*p == T_LINENBR) p += 3;                                 // step over the line number
@@ -2635,7 +2651,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram) {
                      skipelement(p);
                      p++;
                     if(*p == T_NEWLINE) {
-                        CurrentLinePtr = p;
+                        CurrentLineOffset = (FSIZE_t)p;
                         p++;                                        // skip the newline token
                     }
                     if(*p == T_LINENBR) p += 3;                     // skip over a line number
@@ -2673,7 +2689,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram) {
                      error("Missing END declaration");
                  }
                  if(*p == T_NEWLINE) {
-                     CurrentLinePtr = p;
+                     CurrentLineOffset = (FSIZE_t)p;
                      p++;                                            // skip the newline token
                  }
                  if(*p == T_LINENBR) p += 3;                         // skip over the line number
@@ -2693,7 +2709,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram) {
          if(*p == 0) p++;                                            // if it is at the end of an element skip the zero marker
          if(*p == 0) break;                                          // end of the program
          if(*p == T_NEWLINE) {
-             CurrentLinePtr = p;
+             CurrentLineOffset = (FSIZE_t)p;
              p++;                                                    // skip the newline token
          }
          if(*p == T_LINENBR) p += 3;                                 // step over the line number
@@ -2717,7 +2733,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram) {
                  error("Cannot redefine fonts 1, 6, or 7");
              }
 
-             //FlashWriteWord(fontnbr - 1);                        // a low number (< FONT_TABLE_SIZE) marks the entry as a font
+             //SDWriteWord(fontnbr - 1);                        // a low number (< FONT_TABLE_SIZE) marks the entry as a font
              // B31 = 1 now marks entry as font.
              MemWriteByte(fontnbr - 1);
              MemWriteByte(0x00);  
@@ -2747,7 +2763,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram) {
                      skipelement(p);
                      p++;
                     if(*p == T_NEWLINE) {
-                        CurrentLinePtr = p;
+                        CurrentLineOffset = (FSIZE_t)p;
                         p++;                                        // skip the newline token
                     }
                     if(*p == T_LINENBR) p += 3;                     // skip over a line number
@@ -2780,7 +2796,7 @@ void MIPS16 SaveProgramToRAM(unsigned char *pm, int msg, uint8_t *ram) {
                     error("Missing END declaration");
                  }
                  if(*p == T_NEWLINE) {
-                    CurrentLinePtr = p;
+                    CurrentLineOffset = (FSIZE_t)p;
                     p++;                                        // skip the newline token
                  }
                  if(*p == T_LINENBR) p += 3;                     // skip over a line number
@@ -2872,7 +2888,7 @@ void MIPS16 loadCMM2(unsigned char *p, bool autorun, bool message)
     getargs(&p, 1, (unsigned char *)",");
     if (!(argc & 1) || argc == 0)
         error("Syntax");
-    if (CurrentLinePtr != NULL && !autorun)
+    if (CurrentLineOffset != 0 && !autorun)
         error("Invalid in a program");
 
     if (!FileLoadCMM2Program((char *)argv[0], message))
@@ -2880,13 +2896,17 @@ void MIPS16 loadCMM2(unsigned char *p, bool autorun, bool message)
     FlashLoad = 0;
     if (autorun)
     {
-        if (*ProgMemory != 0x01)
+        open_prog_file();
+        if (SDByte(ProgMemory) != 0x01) {
+            close_prog_file();
             return; // no program to run
+        }
+        close_prog_file();
         ClearRuntime(true);
         WatchdogSet = false;
         PrepareProgram(true);
         IgnorePIN = false;
-        if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE) ExecuteProgram(ProgMemory - Option.LIBRARY_FLASH_SIZE);  // run anything that might be in the library
+        if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE) ExecuteProgramSD(ProgMemory - Option.LIBRARY_FLASH_SIZE);  // run anything that might be in the library
         nextstmt = ProgMemory;
     }
     return;
@@ -2903,7 +2923,7 @@ void MIPS16 cmd_loadCMM2(void){
         else
             error("Syntax");
     }
-    else if (CurrentLinePtr != NULL)
+    else if (CurrentLineOffset != 0)
         error("Invalid in a program");
     
     loadCMM2(argv[0],autorun,true);
@@ -3043,7 +3063,7 @@ void MIPS16 cmd_load(void)
             autorun = true;
         else
             error("Syntax");
-    }  else if (CurrentLinePtr != NULL) error("Invalid in a program");
+    }  else if (CurrentLineOffset != 0) error("Invalid in a program");
     if (!FileLoadProgram(argv[0], false)){
         SetFont(oldfont);
         PromptFont=oldfont;
@@ -3051,13 +3071,17 @@ void MIPS16 cmd_load(void)
     }
     FlashLoad = 0;
     if (autorun) {
-        if (*ProgMemory != 0x01)
+        open_prog_file();
+        if (SDByte(ProgMemory) != 0x01) {
+            close_prog_file();
             return; // no program to run
+        }
+        close_prog_file();
         ClearRuntime(true);
         WatchdogSet = false;
         PrepareProgram(true);
         IgnorePIN = false;
-        if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE) ExecuteProgram(ProgMemory - Option.LIBRARY_FLASH_SIZE);  // run anything that might be in the library
+        if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE) ExecuteProgramSD(ProgMemory - Option.LIBRARY_FLASH_SIZE);  // run anything that might be in the library
         nextstmt = ProgMemory;
     }
     SetFont(oldfont);
@@ -3642,7 +3666,7 @@ void MIPS16 cmd_copy(void)
         }
         if (pp[0] == 0)
             strcpy(pp, "*");
-        if (CurrentLinePtr)
+        if (CurrentLineOffset)
             error("Invalid in a program");
         FatFSFileSystem=t-1;
         if (!InitSDCard())
@@ -3889,7 +3913,7 @@ void getfullfilepath(char *p, char *q){
 
 void MIPS16 cmd_files(void)
 {
-//    if(CurrentLinePtr) error("Invalid in a program");
+//    if(CurrentLineOffset) error("Invalid in a program");
     int waste=0, t=FatFSFileSystem+1;
     unsigned char cmdbuffer[STRINGSIZE]={0};
     unsigned char *cmdbuf=cmdbuffer;
@@ -3900,7 +3924,7 @@ void MIPS16 cmd_files(void)
         *cmdbuf='"';
     }
     int oldfont=PromptFont;
-    if(!CurrentLinePtr){
+    if(!CurrentLineOffset){
         ClearVars(0,true);
         ClearRuntime(true);
     }
@@ -3957,7 +3981,7 @@ void MIPS16 cmd_files(void)
                 error("Syntax");
         }
     }
-    if(CurrentLinePtr){
+    if(CurrentLineOffset){
         CloseAudio(1);
         SaveContext();
         ClearVars(0,false);
@@ -4301,7 +4325,7 @@ void MIPS16 cmd_files(void)
                         ShowCursor(false);
                         FatFSFileSystem=FatFSFileSystemSave;
                         PromptFont=oldfont;
-                        if(CurrentLinePtr)RestoreContext(false);
+                        if(CurrentLineOffset)RestoreContext(false);
                         MMAbort=false;
                         return;
 //                        longjmp(mark, 1);
@@ -4342,7 +4366,7 @@ void MIPS16 cmd_files(void)
         FatFSFileSystem=FatFSFileSystemSave;
         Option.NoScroll=noscroll;
         PromptFont=oldfont;
-        if(CurrentLinePtr)RestoreContext(false);
+        if(CurrentLineOffset)RestoreContext(false);
         return;
 //        longjmp(mark, 1);
 
@@ -4431,7 +4455,7 @@ void cmd_autosave(void)
     int c, prevc = 0, crunch = false;
     int count = 0;
     uint64_t timeout;
-    if (CurrentLinePtr)error("Invalid in a program");
+    if (CurrentLineOffset)error("Invalid in a program");
     char *tp=(char *)checkstring(cmdline,(unsigned char *)"APPEND");
     if(tp){
         ClearVars(0,true);
@@ -4510,7 +4534,7 @@ readin:;
     while (getConsole() != -1)
         ; // clear any rubbish in the input
           //    ClearSavedVars();                                               // clear any saved variables
-    SaveProgramToFlash(buf, true);
+    SaveProgramToSD(buf, true);
     ClearSavedVars(); // clear any saved variables
     ClearTempMemory(); 
  #ifdef PICOMITEWEB
@@ -4534,14 +4558,14 @@ void cmd_autosave(void)
     int c, prevc = 0, crunch = false;
     int count = 0;
     uint64_t timeout;
-    if (CurrentLinePtr)error("Invalid in a program");
+    if (CurrentLineOffset)error("Invalid in a program");
     if(!checkstring(cmdline,(unsigned char *)"APPEND")){
         FlashLoad=0;
         uSec(250000);
-        FlashWriteInit(PROGRAM_FLASH);
-        flash_range_erase(realflashpointer, MAX_PROG_SIZE);
-        FlashWriteByte(0); FlashWriteByte(0); FlashWriteByte(0);    // terminate the program in flash
-        FlashWriteClose();
+        SDWriteInit(PROGRAM_FLASH);
+        SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
+        SDWriteByte(0); SDWriteByte(0); SDWriteByte(0);    // terminate the program in flash
+        SDWriteClose();
         if (*cmdline)
         {
             if (toupper(*cmdline) == 'C')
@@ -4618,7 +4642,7 @@ void cmd_autosave(void)
     int j,i=0;
         j=check_line_length((char *)buf,&i);
         if(j>255)error("line % is % characters long, maximum is 255",i,j);
-        SaveProgramToFlash(buf, true);
+        SaveProgramToSD(buf, true);
         ClearSavedVars(); // clear any saved variables
         ClearTempMemory(); 
 #ifdef PICOMITEWEB
@@ -4963,7 +4987,7 @@ void CheckSDCard(void)
             s |= (STA_NODISK | STA_NOINIT);
             SDCardStat = s;
             ShowCursor(false);
-            if(!CurrentLinePtr)MMPrintString("Warning: SDcard Removed\r\n> ");
+            if(!CurrentLineOffset)MMPrintString("Warning: SDcard Removed\r\n> ");
             FatFSFileSystem=0;
         }
     }
@@ -5116,94 +5140,150 @@ void ResetOptions(bool startup)
     SaveOptions();
     uSec(250000);
 }
-void ResetAllFlash(void)
+void ResetAll(void)
 {
     ResetOptions(true);
     ClearSavedVars();
-    disable_interrupts_pico();
+    SDWriteInit(PROGRAM_FLASH);
     for (int i = 0; i < MAXFLASHSLOTS + 1; i++)
     {
-        uint32_t j = FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE + (i * MAX_PROG_SIZE);
-        flash_range_erase(j, MAX_PROG_SIZE);
+        uint32_t j = (i * MAX_PROG_SIZE);
+        SDEraseBlock(j, MAX_PROG_SIZE);
     }
-    enable_interrupts_pico();
-    FlashWriteInit(PROGRAM_FLASH);
-    flash_range_erase(realflashpointer, MAX_PROG_SIZE);
-    FlashWriteByte(0);
-    FlashWriteByte(0);
-    FlashWriteByte(0); // terminate the program in flash
-    FlashWriteClose();
+    SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
+    SDWriteByte(0);
+    SDWriteByte(0);
+    SDWriteByte(0); // terminate the program in flash
+    SDWriteClose();
 }
-void FlashWriteInit(int region)
+
+static FIL f;
+// Функция открытия файла для записи без перезаписи если файл есть
+void open_prog_file(void) {
+    FRESULT fr = f_open(&f, "/tmp/picoMite.prog", FA_READ | FA_WRITE | FA_OPEN_EXISTING);
+    if (fr == FR_NO_FILE) {
+        f_open(&f, "/tmp/picoMite.prog", FA_READ | FA_WRITE | FA_CREATE_NEW);
+    }
+}
+static FSIZE_t last_p = -1;
+static uint8_t last_res = 0xFF;
+void close_prog_file(void) {
+    last_p = -1;
+    last_res = 0xFF;
+    f_close(&f);
+    SecondsTimer += (time_us_64()/1000 - mSecTimer);
+    mSecTimer = time_us_64()/1000;
+}
+
+uint8_t SDByte(FSIZE_t p) {
+    if (last_p == p) return last_res;
+    UINT br;
+    uint8_t res = 0xFF;
+    f_lseek(&f, p);
+    f_read(&f, &res, 1, &br);
+    last_p = p;
+    last_res = res;
+    return res;
+}
+
+int SDInt(FSIZE_t p) {
+    UINT br;
+    int res = 0xFFFFFFFF;
+    f_lseek(&f, p);
+    f_read(&f, &res, 4, &br);
+    return res;
+}
+
+UINT SDBlock(FSIZE_t p, void* buf, size_t sz) {
+    UINT br = 0;
+    f_lseek(&f, p);
+    f_read(&f, buf, sz, &br);
+    return br;
+}
+
+void SDWriteInit(int region)
 {
     for (int i = 0; i < 64; i++)
         MemWord.i32[i] = 0xFFFFFFFF;
     mi8p = 0;
     if (region == PROGRAM_FLASH)
-        realflashpointer = (uint32_t)PROGSTART;
+        real_lba_pointer = PROGSTART;
     else if (region == LIBRARY_FLASH)
-        realflashpointer = (uint32_t)(PROGSTART - MAX_PROG_SIZE);  //i.e the last slot  
+        real_lba_pointer = (PROGSTART - MAX_PROG_SIZE);  //i.e the last slot  
     else 
-        realflashpointer = (uint32_t)PROGSTART - MAX_PROG_SIZE*(MAXFLASHSLOTS-region+1);
-    disable_interrupts_pico();
+        real_lba_pointer = PROGSTART - MAX_PROG_SIZE * (MAXFLASHSLOTS - region + 1);
+    open_prog_file();
 }
-void FlashWriteBlock(void)
+void SDWriteProg(FSIZE_t off, const void* buff, size_t sz)
 {
-    int i;
-    uint32_t address = realflashpointer - 256;
-    //    if(address % 32)error("Memory write address");
-    flash_range_program((const uint32_t)address, (const uint8_t *)&MemWord.i64[0], 256);
-    for (i = 0; i < 64; i++)
+    UINT wb;
+    f_lseek(&f, off);
+    f_write(&f, buff, sz, &wb);
+}
+void SDWriteBlock(void)
+{
+    FSIZE_t address = real_lba_pointer - 256;
+    SDWriteProg(address, (const uint8_t *)&MemWord.i64[0], 256);
+    for (int i = 0; i < 64; i++)
         MemWord.i32[i] = 0xFFFFFFFF;
 }
-void FlashWriteByte(unsigned char b)
+void SDWriteByte(unsigned char b)
 {
-    realflashpointer++;
+    real_lba_pointer++;
     MemWord.i8[mi8p] = b;
     mi8p++;
     mi8p %= 256;
     if (mi8p == 0)
     {
-        FlashWriteBlock();
+        SDWriteBlock();
     }
 }
-void FlashWriteWord(unsigned int i)
+void SDWriteWord(unsigned int i)
 {
-    FlashWriteByte(i & 0xFF);
-    FlashWriteByte((i >> 8) & 0xFF);
-    FlashWriteByte((i >> 16) & 0xFF);
-    FlashWriteByte((i >> 24) & 0xFF);
+    SDWriteByte(i & 0xFF);
+    SDWriteByte((i >> 8) & 0xFF);
+    SDWriteByte((i >> 16) & 0xFF);
+    SDWriteByte((i >> 24) & 0xFF);
 }
 // Set the pointer to a specific address
-void FlashSetAddress(int address) {
-	 realflashpointer=(uint32_t)PROGSTART+address;
+void SDSetAddress(int address) {
+	real_lba_pointer = PROGSTART + address;
 }
 
-void FlashWriteAlignWord(void)
+void SDWriteAlignWord(void)
 {
     while ((mi8p %4) != 0)
     {
-        FlashWriteByte(0x0);
+        SDWriteByte(0x0);
     }
-    FlashWriteWord(0xFFFFFFFF);
+    SDWriteWord(0xFFFFFFFF);
 }
 
+void SDEraseBlock(FSIZE_t off, size_t sz) {
+    static uint32_t buff = 0xFFFFFFFF;
+    UINT bw;
+    f_lseek(&f, off);
+    for (int i = 0; i < sz; i += 4) {
+        f_write(&f, &buff, 4, &bw);
+    }
+}
 
-void FlashWriteAlign(void)
+void SDWriteAlign(void)
 {
     while (mi8p != 0)
     {
-        FlashWriteByte(0x0);
+        SDWriteByte(0x0);
     }
-    FlashWriteWord(0xFFFFFFFF);
+    SDWriteWord(0xFFFFFFFF);
 }
-void FlashWriteClose(void)
+
+void SDWriteClose(void)
 {
     while (mi8p != 0)
     {
-        FlashWriteByte(0xff);
+        SDWriteByte(0xff);
     }
-    enable_interrupts_pico();
+    f_close(&f);
 }
 /*  @endcond */
 

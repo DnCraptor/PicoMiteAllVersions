@@ -75,7 +75,7 @@ they may be changed and you would then need to re insert your changes in a new r
  unsigned char *nextstmt	This is a pointer to the next statement to be executed.  The only thing a
 				command can do with it is save it or change it to some other location.
 
- unsigned char *CurrentLinePtr  This is read only and is set to NULL if the command is in immediate mode.
+ unsigned char *CurrentLineOffset  This is read only and is set to NULL if the command is in immediate mode.
 
  The only actions a command can do to change the program flow is to change nextstmt or
  execute longjmp(mark, 1) if it wants to abort the program.

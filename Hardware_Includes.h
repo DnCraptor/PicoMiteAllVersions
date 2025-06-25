@@ -210,7 +210,7 @@ extern volatile unsigned int GPSTimer;
 extern uint16_t AUDIO_L_PIN, AUDIO_R_PIN, AUDIO_SLICE;
 extern uint16_t AUDIO_WRAP;
 extern int PromptFont, PromptFC, PromptBC;                             // the font and colours selected at the prompt
-extern const uint8_t *flash_progmemory;
+extern const FSIZE_t lba_progmemory;
 extern lfs_t lfs;
 extern lfs_dir_t lfs_dir;
 extern struct lfs_info lfs_info;
@@ -270,7 +270,7 @@ extern void clearrepeat(void);
 int __not_in_flash_func(MMInkey)(void);
 int MMgetchar(void);
 char MMputchar(char c, int flush);
-void SaveProgramToFlash(unsigned char *pm, int msg);
+void SaveProgramToSD(unsigned char *pm, int msg);
 
 void CheckAbort(void);
 void EditInputLine(void);

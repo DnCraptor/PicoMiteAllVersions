@@ -99,7 +99,7 @@ commands and functions
  char *nextstmt	This is a pointer to the next statement to be executed.  The only thing a
 				command can do with it is save it or change it to some other location.
 
- char *CurrentLinePtr  This is read only and is set to NULL if the command is in immediate mode.
+ char *CurrentLineOffset  This is read only and is set to NULL if the command is in immediate mode.
 
  The only actions a command can do to change the program flow is to change nextstmt or
  execute longjmp(mark, 1) if it wants to abort the program.
@@ -1051,28 +1051,28 @@ void MIPS16 cmd_play(void) {
     if(checkstring(cmdline, (unsigned char *)"NEXT")) {
 		if(CurrentlyPlaying == P_FLAC){
 			if(trackplaying==trackstoplay){
-				if(!CurrentLinePtr)MMPrintString("Last track is playing\r\n");
+				if(!CurrentLineOffset)MMPrintString("Last track is playing\r\n");
 				return;
 			}
 			trackplaying++;
 			flaccallback(alist[trackplaying].fn);
 		} else if(CurrentlyPlaying == P_WAV){
 			if(trackplaying==trackstoplay){
-				if(!CurrentLinePtr)MMPrintString("Last track is playing\r\n");
+				if(!CurrentLineOffset)MMPrintString("Last track is playing\r\n");
 				return;
 			}
 			trackplaying++;
 			wavcallback(alist[trackplaying].fn);
 		} else if(CurrentlyPlaying == P_MP3){
 			if(trackplaying==trackstoplay){
-				if(!CurrentLinePtr)MMPrintString("Last track is playing\r\n");
+				if(!CurrentLineOffset)MMPrintString("Last track is playing\r\n");
 				return;
 			}
 			trackplaying++;
 			mp3callback(alist[trackplaying].fn,0);
 		} else if(CurrentlyPlaying == P_MIDI){
 			if(trackplaying==trackstoplay){
-				if(!CurrentLinePtr)MMPrintString("Last track is playing\r\n");
+				if(!CurrentLineOffset)MMPrintString("Last track is playing\r\n");
 				return;
 			}
 			trackplaying++;
@@ -1084,28 +1084,28 @@ void MIPS16 cmd_play(void) {
     if(checkstring(cmdline, (unsigned char *)"PREVIOUS")) {
 		if(CurrentlyPlaying == P_FLAC){
 			if(trackplaying==0){
-				if(!CurrentLinePtr)MMPrintString("First track is playing\r\n");
+				if(!CurrentLineOffset)MMPrintString("First track is playing\r\n");
 				return;
 			}
 			trackplaying--;
 			flaccallback(alist[trackplaying].fn);
 		} else if(CurrentlyPlaying == P_WAV){
 			if(trackplaying==0){
-				if(!CurrentLinePtr)MMPrintString("First track is playing\r\n");
+				if(!CurrentLineOffset)MMPrintString("First track is playing\r\n");
 				return;
 			}
 			trackplaying--;
 			wavcallback(alist[trackplaying].fn);
 		} else if(CurrentlyPlaying == P_MP3){
 			if(trackplaying==0){
-				if(!CurrentLinePtr)MMPrintString("First track is playing\r\n");
+				if(!CurrentLineOffset)MMPrintString("First track is playing\r\n");
 				return;
 			}
 			trackplaying--;
 			mp3callback(alist[trackplaying].fn,0);
 		} else if(CurrentlyPlaying == P_MIDI){
 			if(trackplaying==0){
-				if(!CurrentLinePtr)MMPrintString("First track is playing\r\n");
+				if(!CurrentLineOffset)MMPrintString("First track is playing\r\n");
 				return;
 			}
 			trackplaying--;
@@ -1177,7 +1177,7 @@ void MIPS16 cmd_play(void) {
 				PlayDuration=(uint64_t)duration;
 			} else duration=1;
 			if(argc == 7) {
-				if(!CurrentLinePtr)error("No program running");
+				if(!CurrentLineOffset)error("No program running");
 				WAVInterrupt = (char *)GetIntAddress(argv[6]);					// get the interrupt location
 				WAVcomplete=false;
 				InterruptUsed = true;
@@ -1350,7 +1350,7 @@ void MIPS16 cmd_play(void) {
         WAVInterrupt = NULL;
         WAVcomplete = 0;
         if(argc == 3) {
-			if(!CurrentLinePtr)error("No program running");
+			if(!CurrentLineOffset)error("No program running");
             WAVInterrupt = (char *)GetIntAddress(argv[2]);					// get the interrupt location
             InterruptUsed = true;
         }
@@ -1364,7 +1364,7 @@ void MIPS16 cmd_play(void) {
 				trackplaying=0;
 				DIR djd;
 				djd.pat="*.wav";
-				if(!CurrentLinePtr)MMPrintString("Directory found - commencing player\r\n");
+				if(!CurrentLineOffset)MMPrintString("Directory found - commencing player\r\n");
 				FSerror = f_opendir(&djd, q);
 				for(;;){
 					fr=f_readdir(&djd, &fno);
@@ -1378,7 +1378,7 @@ void MIPS16 cmd_play(void) {
 						strcat(alist[trackstoplay].fn,fno.fname);
 						str_replace(alist[trackstoplay].fn, "//", "/",3);
 						str_replace(alist[trackstoplay].fn, "/./", "/",3);
-						if(!CurrentLinePtr){
+						if(!CurrentLineOffset){
 							MMPrintString(fno.fname);
 							PRet();
 						}
@@ -1418,7 +1418,7 @@ void MIPS16 cmd_play(void) {
         WAVInterrupt = NULL;
         WAVcomplete = 0;
         if(argc == 3) {
-			if(!CurrentLinePtr)error("No program running");
+			if(!CurrentLineOffset)error("No program running");
             WAVInterrupt = (char *)GetIntAddress(argv[2]);					// get the interrupt location
             InterruptUsed = true;
         }
@@ -1432,7 +1432,7 @@ void MIPS16 cmd_play(void) {
 				trackplaying=0;
 				DIR djd;
 				djd.pat="*.flac";
-				if(!CurrentLinePtr)MMPrintString("Directory found - commencing player\r\n");
+				if(!CurrentLineOffset)MMPrintString("Directory found - commencing player\r\n");
 				FSerror = f_opendir(&djd, q);
 				for(;;){
 					fr=f_readdir(&djd, &fno);
@@ -1446,7 +1446,7 @@ void MIPS16 cmd_play(void) {
 						strcat(alist[trackstoplay].fn,fno.fname);
 						str_replace(alist[trackstoplay].fn, "//", "/",3);
 						str_replace(alist[trackstoplay].fn, "/./", "/",3);
-						if(!CurrentLinePtr){
+						if(!CurrentLineOffset){
 							MMPrintString(fno.fname);
 							PRet();
 						}
@@ -1564,7 +1564,7 @@ void MIPS16 cmd_play(void) {
 		setVolumes(vol_left,vol_right);
 		midienabled=1;
 		miditest(0);
-		if(!CurrentLinePtr)MMPrintString("Real Time MIDI mode enabled\r\n");
+		if(!CurrentLineOffset)MMPrintString("Real Time MIDI mode enabled\r\n");
 		return;
 	}
 	if((tp = checkstring(cmdline, (unsigned char *)"MIDIFILE"))) {
@@ -1584,7 +1584,7 @@ void MIPS16 cmd_play(void) {
 
         WAVcomplete = 0;
         if(argc == 3) {
-			if(!CurrentLinePtr)error("No program running");
+			if(!CurrentLineOffset)error("No program running");
             WAVInterrupt = (char *)GetIntAddress(argv[2]);					// get the interrupt location
             InterruptUsed = true;
         }
@@ -1598,7 +1598,7 @@ void MIPS16 cmd_play(void) {
 				trackplaying=0;
 				DIR djd;
 				djd.pat="*.mid";
-				if(!CurrentLinePtr)MMPrintString("Directory found - commencing player\r\n");
+				if(!CurrentLineOffset)MMPrintString("Directory found - commencing player\r\n");
 				FSerror = f_opendir(&djd, q);
 				for(;;){
 					fr=f_readdir(&djd, &fno);
@@ -1612,7 +1612,7 @@ void MIPS16 cmd_play(void) {
 						strcat(alist[trackstoplay].fn,fno.fname);
 						str_replace(alist[trackstoplay].fn, "//", "/",3);
 						str_replace(alist[trackstoplay].fn, "/./", "/",3);
-						if(!CurrentLinePtr){
+						if(!CurrentLineOffset){
 							MMPrintString(fno.fname);
 							PRet();
 						}
@@ -1708,7 +1708,7 @@ void MIPS16 cmd_play(void) {
         WAVInterrupt = NULL;
         WAVcomplete = 0;
         if(argc == 3) {
-			if(!CurrentLinePtr)error("No program running");
+			if(!CurrentLineOffset)error("No program running");
             WAVInterrupt = (char *)GetIntAddress(argv[2]);					// get the interrupt location
             InterruptUsed = true;
         }
@@ -1722,7 +1722,7 @@ void MIPS16 cmd_play(void) {
 				trackplaying=0;
 				DIR djd;
 				djd.pat="*.mp3";
-				if(!CurrentLinePtr)MMPrintString("Directory found - commencing player\r\n");
+				if(!CurrentLineOffset)MMPrintString("Directory found - commencing player\r\n");
 				FSerror = f_opendir(&djd, q);
 				for(;;){
 					fr=f_readdir(&djd, &fno);
@@ -1736,7 +1736,7 @@ void MIPS16 cmd_play(void) {
 						strcat(alist[trackstoplay].fn,fno.fname);
 						str_replace(alist[trackstoplay].fn, "//", "/",3);
 						str_replace(alist[trackstoplay].fn, "/./", "/",3);
-						if(!CurrentLinePtr){
+						if(!CurrentLineOffset){
 							MMPrintString(fno.fname);
 							PRet();
 						}
@@ -1794,7 +1794,7 @@ void MIPS16 cmd_play(void) {
         WAV_fnbr = FindFreeFileNbr();
         if(!BasicFileOpen(p, WAV_fnbr, FA_READ)) return;
 		if(argc==3){
-			if(!CurrentLinePtr)error("No program running");
+			if(!CurrentLineOffset)error("No program running");
             WAVInterrupt = (char *)GetIntAddress(argv[2]);					// get the interrupt location
             InterruptUsed = true;
 			noloop=1;
@@ -1828,18 +1828,18 @@ void MIPS16 cmd_play(void) {
 			unsigned char *r = GetTempMemory(256);
 			positionfile(WAV_fnbr,0);
 			uint32_t j = RoundUpK4(TOP_OF_SYSTEM_FLASH);
-			disable_interrupts_pico();
-			flash_range_erase(j, RoundUpK4(fsize));
-			enable_interrupts_pico();
+			open_prog_file();
+			SDEraseBlock(j, RoundUpK4(fsize));
+			close_prog_file();
 			while(!FileEOF(WAV_fnbr)) { 
 				memset(r,0,256) ;
 				for(i=0;i<256;i++) {
 					if(FileEOF(WAV_fnbr))break;
 					r[i] = FileGetChar(WAV_fnbr);
 				}  
-				disable_interrupts_pico();
-				flash_range_program(j, (uint8_t *)r, 256);
-				enable_interrupts_pico();
+				open_prog_file();
+				SDWriteProg(j, (uint8_t *)r, 256);
+				close_prog_file();
 				routinechecks();
 				j+=256;
 			}
@@ -1851,7 +1851,7 @@ void MIPS16 cmd_play(void) {
         hxcmod_setcfg(mcontext, modfilesamplerate,1,1 );
 		hxcmod_load( mcontext, (void*)modbuff, fsize );
 		if(!mcontext->mod_loaded)error("Load failed");
-		if(!CurrentLinePtr){
+		if(!CurrentLineOffset){
 			MMPrintString("Playing ");MMPrintString((char *)mcontext->song.title);PRet();
 		}
 		if(Option.AUDIO_MISO_PIN){

@@ -58,9 +58,9 @@ void ClearSavedVars(void);
 int FileLoadProgram(unsigned char *fname, bool chain);
 int FileLoadCMM2Program(char *fname, bool message);
 void SaveOptions(void);
-void ResetAllFlash(void);
-void disable_interrupts_pico(void);
-void enable_interrupts_pico(void);
+void ResetAll(void);
+void open_prog_file(void);
+void close_prog_file(void);
 int ForceFileClose(int fnbr);
 void ErrorCheck(int fnbr);
 extern int OptionFileErrorAbort;
@@ -239,16 +239,23 @@ extern unsigned char *CFunctionFlash, *CFunctionLibrary;
 extern struct option_s Option;
 extern int FlashLoad;
 extern void ResetOptions(bool startup);
-extern void FlashWriteBlock(void);
-extern void FlashWriteWord(unsigned int i);
-extern void FlashWriteByte(unsigned char b);
-extern void FlashWriteAlign(void);
-extern void FlashWriteClose(void);
-extern void FlashWriteInit(int region);
-void FlashSetAddress(int address);  //new
-extern void FlashWriteAlignWord(void);  //new
+extern void open_prog_file(void);
+extern void close_prog_file(void);
+extern void SDWriteBlock(void);
+extern void SDWriteProg(FSIZE_t off, const void* buff, size_t sz);
+extern void SDWriteWord(unsigned int i);
+extern void SDWriteByte(unsigned char b);
+extern void SDEraseBlock(FSIZE_t offser, size_t sz);
+extern void SDWriteAlign(void);
+extern void SDWriteClose(void);
+extern void SDWriteInit(int region);
+extern uint8_t SDByte(FSIZE_t p);
+extern int SDInt(FSIZE_t p);
+extern UINT SDBlock(FSIZE_t p, void* buf, size_t sz);
+extern void SDSetAddress(int address);  //new
+extern void SDWriteAlignWord(void);  //new
 extern void ResetFlashStorage(int umount);
-extern volatile uint32_t realflashpointer;
+extern volatile FSIZE_t real_lba_pointer;
 extern int drivecheck(char *p, int *waste);
 extern void getfullfilename(char *fname, char *q);
 extern char *GetCWD(void);

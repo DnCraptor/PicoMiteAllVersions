@@ -104,7 +104,7 @@ int gosubindex;
 unsigned char g_DimUsed = false;						// used to catch OPTION BASE after DIM has been used
 
 int TraceOn;                                // used to track the state of TRON/TROFF
-unsigned char *TraceBuff[TRACE_BUFF_SIZE];
+FSIZE_t TraceBuff[TRACE_BUFF_SIZE];
 int TraceBuffIndex;                       // used for listing the contents of the trace buffer
 int OptionErrorSkip;                                               // how to handle an error
 int MMerrno;                                                        // the error number
@@ -639,7 +639,7 @@ void MIPS16 ListNewLine(int *ListCnt, int all) {
 }
 
 
-void MIPS16 ListProgram(unsigned char *p, int all) {
+void MIPS16 ListProgram(FSIZE_t p, int all) {
 	char b[STRINGSIZE];
 	char *pp;
     int ListCnt = CurrentY/(FontTable[gui_font >> 4][1] * (gui_font & 0b1111)) + 2;
@@ -1025,7 +1025,7 @@ void  MIPS16 cmd_continue(void) {
     }
     // must be a normal CONTINUE
 	checkend(cmdline);
-	if(CurrentLinePtr) error("Invalid in a program");
+	if(CurrentLineOffset) error("Invalid in a program");
 	if(ContinuePoint == NULL) error("Cannot continue");
 //    IgnorePIN = false;
 	nextstmt = ContinuePoint;
@@ -1037,10 +1037,10 @@ void MIPS16 cmd_new(void) {
 	ClearProgram(true);
 	FlashLoad=0;
 	uSec(250000);
-    FlashWriteInit(PROGRAM_FLASH);
-    flash_range_erase(realflashpointer, MAX_PROG_SIZE);
-    FlashWriteByte(0); FlashWriteByte(0); FlashWriteByte(0);    // terminate the program in flash
-    FlashWriteClose();
+    SDWriteInit(PROGRAM_FLASH);
+    SDEraseBlock(real_lba_pointer, MAX_PROG_SIZE);
+    SDWriteByte(0); SDWriteByte(0); SDWriteByte(0);    // terminate the program in flash
+    SDWriteClose();
 #ifdef PICOMITEVGA
 	int mode = DISPLAY_TYPE-SCREENMODE1+1;
 	setmode(mode, true);
@@ -1101,7 +1101,7 @@ void cmd_goto(void) {
 		nextstmt = findlabel(cmdline);								// must be a label
 	else
 		nextstmt = findline(getinteger(cmdline), true);				// try for a line number
-	CurrentLinePtr = nextstmt;
+	CurrentLineOffset = nextstmt;
 }
 
 
@@ -1223,7 +1223,7 @@ retest_an_if:
 						// to the start of the function.  This is not very clean (it uses the dreaded goto for a start) but it works
 						p+=sizeof(CommandToken);                                        // step over the token
 						skipspace(p);
-						CurrentLinePtr = rp;
+						CurrentLineOffset = rp;
 						if(*p == 0) error("Syntax");        // there must be a test after the elseif
 						cmdline = p;
 						skipelement(p);
@@ -1646,7 +1646,7 @@ void cmd_chain(void){
 
 void cmd_select(void) {
     int i, type;
-    unsigned char *p, *rp = NULL, *SaveCurrentLinePtr;
+    unsigned char *p, *rp = NULL, *SaveCurrentLineOffset;
     void *v;
     MMFLOAT f = 0;
     long long int  i64 = 0;
@@ -1664,7 +1664,7 @@ void cmd_select(void) {
 
     // now search through the program looking for a matching CASE statement
     // i tracks the nesting level of any nested SELECT CASE commands
-    SaveCurrentLinePtr = CurrentLinePtr;                            // save where we are because we will have to fake CurrentLinePtr to get errors reported correctly
+    SaveCurrentLineOffset = CurrentLineOffset;                            // save where we are because we will have to fake CurrentLineOffset to get errors reported correctly
     i = 1; p = nextstmt;
     while(1) {
         p = GetNextCommand(p, &rp, (unsigned char *)"No matching END SELECT");
@@ -1678,7 +1678,7 @@ void cmd_select(void) {
             long long int  i64t, i64tt;
             unsigned char *st, *stt;
 
-            CurrentLinePtr = rp;                                    // and report errors at the line we are on
+            CurrentLineOffset = rp;                                    // and report errors at the line we are on
 			p++; //step past rest of command token
             // loop through the comparison elements on the CASE line.  Each element is separated by a comma
             do {
@@ -1687,9 +1687,9 @@ void cmd_select(void) {
                 t = type;
                 // check for CASE IS,  eg  CASE IS > 5  -or-  CASE > 5  and process it if it is
                 // an operator can be >, <>, etc but it can also be a prefix + or - so we must not catch them
-                if((SaveCurrentLinePtr = checkstring(p, (unsigned char *)"IS")) || ((tokentype(*p) & T_OPER) && !(*p == GetTokenValue((unsigned char *)"+") || *p == GetTokenValue((unsigned char *)"-")))) {
+                if((SaveCurrentLineOffset = checkstring(p, (unsigned char *)"IS")) || ((tokentype(*p) & T_OPER) && !(*p == GetTokenValue((unsigned char *)"+") || *p == GetTokenValue((unsigned char *)"-")))) {
                     int o;
-                    if(SaveCurrentLinePtr) p += 2;
+                    if(SaveCurrentLineOffset) p += 2;
                     skipspace(p);
                     if(tokentype(*p) & T_OPER)
                         o = *p++ - C_BASETOKEN;                     // get the operator
@@ -1703,7 +1703,7 @@ void cmd_select(void) {
                     if(i64t) {                                      // evaluates to true
                         skipelement(p);
                         nextstmt = p;
-                        CurrentLinePtr = SaveCurrentLinePtr;
+                        CurrentLineOffset = SaveCurrentLineOffset;
                         return;                                     // if we have a match just return to the interpreter and let it execute the code
                     } else {                                        // evaluates to false
                         skipspace(p);
@@ -1722,7 +1722,7 @@ void cmd_select(void) {
                     if(((type & T_NBR) && f >= ft && f <= ftt) || ((type & T_INT) && i64 >= i64t && i64 <= i64tt) || (((type & T_STR) && Mstrcmp(s, st) >= 0) && (Mstrcmp(s, stt) <= 0))) {
                         skipelement(p);
                         nextstmt = p;
-                        CurrentLinePtr = SaveCurrentLinePtr;
+                        CurrentLineOffset = SaveCurrentLineOffset;
                         return;                                     // if we have a match just return to the interpreter and let it execute the code
                     } else {
                         skipspace(p);
@@ -1734,13 +1734,13 @@ void cmd_select(void) {
                 if(((type & T_NBR) && f == ft) ||  ((type & T_INT) && i64 == i64t) ||  ((type & T_STR) && Mstrcmp(s, st) == 0)) {
                     skipelement(p);
                     nextstmt = p;
-                    CurrentLinePtr = SaveCurrentLinePtr;
+                    CurrentLineOffset = SaveCurrentLineOffset;
                     return;                                         // if we have a match just return to the interpreter and let it execute the code
                 }
                 skipspace(p);
             } while(*p == ',');                                     // keep looping through the elements on the CASE line
             checkend(p);
-            CurrentLinePtr = SaveCurrentLinePtr;
+            CurrentLineOffset = SaveCurrentLineOffset;
         }
 
         // test if we have found a CASE ELSE statement at the same level as this SELECT CASE
@@ -1750,7 +1750,7 @@ void cmd_select(void) {
             checkend(p);
             skipelement(p);
             nextstmt = p;
-            CurrentLinePtr = SaveCurrentLinePtr;
+            CurrentLineOffset = SaveCurrentLineOffset;
             return;
         }
 
@@ -1760,7 +1760,7 @@ void cmd_select(void) {
             // found our matching END SELECT stmt.  Step over it and continue with the statement after it
             skipelement(p);
             nextstmt = p;
-            CurrentLinePtr = SaveCurrentLinePtr;
+            CurrentLineOffset = SaveCurrentLineOffset;
             return;
         }
     }
@@ -2268,10 +2268,10 @@ void cmd_exit(void) {
 		s = getCstring(cmdline);
 		char *p=GetTempMemory(STRINGSIZE);
 		strcpy(p,"[");
-		int ln=CountLines(CurrentLinePtr);
+		int ln=CountLines(CurrentLineOffset);
 		IntToStr(&p[1],ln,10);
-		SaveCurrentLinePtr=CurrentLinePtr;
-		CurrentLinePtr = NULL;                                      // suppress printing the line that caused the issue
+		SaveCurrentLineOffset=CurrentLineOffset;
+		CurrentLineOffset = NULL;                                      // suppress printing the line that caused the issue
 		strcat((char *)p,"] ");
 		strcat((char *)p,(char *)s);
 		error(p);
@@ -2283,7 +2283,7 @@ void cmd_error(void) {
 	unsigned char *s;
 	if(*cmdline && *cmdline != '\'') {
 		s = getCstring(cmdline);
-		// CurrentLinePtr = NULL;                                      // suppress printing the line that caused the issue
+		// CurrentLineOffset = NULL;                                      // suppress printing the line that caused the issue
 		error((char *) s);
 	}
 	else
@@ -2362,10 +2362,10 @@ void cmd_gosub(void) {
        nextstmt = findline(getinteger(cmdline), true);
    IgnorePIN = false;
 
-   errorstack[gosubindex] = CurrentLinePtr;
+   errorstack[gosubindex] = CurrentLineOffset;
    gosubstack[gosubindex++] = (unsigned char *)return_to;
    g_LocalIndex++;
-   CurrentLinePtr = nextstmt;
+   CurrentLineOffset = nextstmt;
 }
 
 void cmd_mid(void){
@@ -2448,7 +2448,7 @@ void MIPS16 __not_in_flash_func(cmd_return)(void) {
     ClearVars(g_LocalIndex--, true);                                        // delete any local variables
     g_TempMemoryIsChanged = true;                                     // signal that temporary memory should be checked
 	nextstmt = gosubstack[--gosubindex];                            // return to the caller
-    CurrentLinePtr = errorstack[gosubindex];
+    CurrentLineOffset = errorstack[gosubindex];
 }
 /*frame
 #define c_topleft  218
@@ -2905,12 +2905,12 @@ search_again:
     NextDataLine = lineptr;
     p+=sizeof(CommandToken);                                                            // step over the token
     skipspace(p);
-    if(!*p || *p == '\'') { CurrentLinePtr = lineptr; error("No DATA to read"); }
+    if(!*p || *p == '\'') { CurrentLineOffset = lineptr; error("No DATA to read"); }
 
         // we have a DATA statement, first split the line into arguments
         {                                                           // new block, the getargs macro must be the first executable stmt in a block
         getargs(&p, (MAX_ARG_COUNT * 2) - 1, (unsigned char *)",");
-        if((argc & 1) == 0) { CurrentLinePtr = lineptr; error("Syntax"); }
+        if((argc & 1) == 0) { CurrentLineOffset = lineptr; error("Syntax"); }
         // now step through the variables on the READ line and get their new values from the argument list
         // we set the line number to the number of the DATA stmt so that any errors are reported correctly
         while(vidx < vcnt) {
@@ -2920,7 +2920,7 @@ search_again:
                 NextData = 0;
                 goto search_again;
             }
-            CurrentLinePtr = lineptr;
+            CurrentLineOffset = lineptr;
             if(vtype[vidx] & T_STR) {
                 char *p1, *p2;
                 if(*argv[NextData] == '"') {                               // if quoted string
@@ -3039,7 +3039,7 @@ void cmd_call(void){
 
 void MIPS16 cmd_restore(void) {
    if(*cmdline == 0 || *cmdline == '\'') {
-       if(CurrentLinePtr >= ProgMemory && CurrentLinePtr < ProgMemory + MAX_PROG_SIZE )
+       if(CurrentLineOffset >= ProgMemory && CurrentLineOffset < ProgMemory + MAX_PROG_SIZE )
            NextDataLine = ProgMemory;
        else
            NextDataLine = LibMemory;
@@ -3194,7 +3194,7 @@ void cmd_on(void) {
 		if(*argv[1] == ss[1]) {
 			// this is a GOSUB, same as a GOTO but we need to first push the return pointer
 			if(gosubindex >= MAXGOSUB) error("Too many nested GOSUB");
-            errorstack[gosubindex] = CurrentLinePtr;
+            errorstack[gosubindex] = CurrentLineOffset;
 			gosubstack[gosubindex++] = nextstmt;
         	g_LocalIndex++;
 		}
@@ -3640,12 +3640,12 @@ void execute(char* mycmd) {
 		memset(inpbuf, 0, STRINGSIZE);
 		tknbuf[strlen((char *)tknbuf)] = 0;
 		tknbuf[strlen((char*)tknbuf) + 1] = 0;
-		if(CurrentLinePtr)ttp = nextstmt;                                                 // save the globals used by commands
+		if(CurrentLineOffset)ttp = nextstmt;                                                 // save the globals used by commands
 		ScrewUpTimer = 1000;
 		ExecuteProgram(tknbuf);                                              // execute the function's code
 		ScrewUpTimer = 0;
 		// g_TempMemoryIsChanged = true;                                     // signal that temporary memory should be checked
-		if(CurrentLinePtr)nextstmt = ttp;
+		if(CurrentLineOffset)nextstmt = ttp;
 		return;
 	}
 	else {

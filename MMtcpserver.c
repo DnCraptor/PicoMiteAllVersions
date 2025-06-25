@@ -143,7 +143,7 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err
 //        cyw43_arch_lwip_check();
         if (p->tot_len > 0) {
                 TCPreceived=1;
-    	        if(!CurrentLinePtr){  // deal with requests when we don't want them
+    	        if(!CurrentLineOffset){  // deal with requests when we don't want them
                         tcp_recved(tpcb, p->tot_len);
                         //DEBUG_printf("Sending 404 on pcb %d, rbuff address is %x ",pcb, (uint32_t)state->buffer_recv[pcb]);
                         state->sent_len[pcb]=0;

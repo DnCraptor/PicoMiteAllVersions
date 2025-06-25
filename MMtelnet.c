@@ -132,7 +132,7 @@ void tcp_telnet_err(void *arg, err_t err) {
 //        DEBUG_printf("Telnet disconnected %d\r\n", err);
         tcp_server_close(arg,state->telnet_pcb_no);
         state->telnet_pcb_no=99;
-//        if(!CurrentLinePtr) longjmp(mark, 1);  
+//        if(!CurrentLineOffset) longjmp(mark, 1);  
 //        else longjmp(ErrNext,1) ;
 //    }
 }
